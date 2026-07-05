@@ -1,0 +1,16 @@
+# Grappeler plugin configuration
+enabled: true
+debug: true
+adminOnly: true          # only admins can grapple / get unlimited ammo
+unlimitedAmmo: true      # free reloads, mag never runs dry (grappeler weapon only)
+damagePlayers: false     # grappeler rounds deal no damage to players
+weaponItemDefinitionId: 2   # Items.WEAPON_1911
+giveAmmoCount: 60        # .45 ammo given by /grappeler
+cooldownMs: 250          # min time between teleports
+triggerLoadingScreenDistance: 9999
+maxGrappleRange: 9999     # max terrain grapple distance (meters)
+projectileSpeed: 9999    # m/s, used to simulate bullet drop on long shots
+groundSnapTolerance: 4   # snap to ground if bullet path passes within this many meters
+terrainTeleportDelayMs: 300
+sendChatText: true
+chatTextMessage: "Grappeler!"

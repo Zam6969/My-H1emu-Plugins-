@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "commonjs",
+    "allowJs": true,
+    "declaration": true,
+    "rootDir": "./src",
+    "outDir": "./out/",
+    "strict": true,
+    "baseUrl": "./src",
+    "ignoreDeprecations": "6.0",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "incremental": false,
+    "experimentalDecorators": true,
+    "types": ["node"]
+  },
+  "include": ["src/"]
+}

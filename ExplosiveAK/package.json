@@ -1,0 +1,16 @@
+{
+  "name": "explosive-ak-plugin",
+  "version": "1.0.0",
+  "description": "AK-47 that fires explosive rounds, with /expak spawn command",
+  "main": "plugin.js",
+  "scripts": {
+    "install": "npm run build",
+    "build": "tsc -p tsconfig.json"
+  },
+  "keywords": [],
+  "author": "zam",
+  "license": "GPL-3.0-only",
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

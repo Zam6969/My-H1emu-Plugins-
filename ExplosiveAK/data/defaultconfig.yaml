@@ -1,0 +1,38 @@
+# ExplosiveAK plugin — default configuration
+#
+# If you are only changing settings for your server, edit the generated
+# "explosiveak-config.yaml" in the base plugins directory, NOT this file.
+#
+# ***** do not change this filename *****
+
+# Minimum milliseconds between explosions per player.
+# 0 = every single bullet explodes, as fast as you can shoot.
+cooldownMs: 0
+
+# How much 7.62 ammo /expak gives along with the AK
+ammoCount: 120
+
+# If true, ALL guns fire explosive rounds for enabled players (not just the AK-47)
+allWeapons: false
+
+# true  = IED-strength rounds (also wreck player-built bases)
+# false = grenade-strength rounds (weak vs construction)
+damageBases: true
+
+# --- Terrain impact simulation (for shots that hit the ground, not an entity) ---
+
+# Simulated bullet speed in m/s, used for bullet drop over distance
+projectileSpeed: 350
+
+# Max distance (meters) a shot is traced before giving up (e.g. aimed at the sky)
+maxRange: 300
+
+# How close (meters) a shallow shot must skim above the ground to still count
+# as a ground hit
+groundSnapTolerance: 4
+
+# Minimum delay (ms) before a terrain explosion, so a direct entity hit that
+# arrives right after the shot can replace it (prevents double explosions).
+# Actual delay = the bullet's flight time to the impact point, or this, whichever
+# is larger.
+terrainDelayMs: 100
