@@ -1,0 +1,7 @@
+{
+  "name": "h1emu-ui-example",
+  "version": "1.0.0",
+  "description": "Example plugin using the H1emu UI API for God Mode and Run Speed controls",
+  "main": "plugin.js",
+  "dependencies": {}
+}
