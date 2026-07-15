@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>H1Emu Web Editor Login</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: radial-gradient(circle at top, #263348, #090d13 58%); color: #edf3ff; }
+    main { width: min(390px, calc(100vw - 32px)); padding: 28px; border: 1px solid #2e405e; border-radius: 16px; background: rgba(10, 16, 25, 0.86); box-shadow: 0 22px 80px rgba(0, 0, 0, 0.45); }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    p { margin: 0 0 20px; color: #aab8cf; line-height: 1.4; }
+    label { display: block; margin: 0 0 8px; color: #cdd8ea; font-weight: 700; }
+    input, button { width: 100%; box-sizing: border-box; border-radius: 10px; font-size: 16px; }
+    input { padding: 12px 13px; border: 1px solid #40526f; background: #101824; color: #fff; }
+    .remember { display: flex; gap: 9px; align-items: center; margin-top: 12px; color: #aab8cf; font-size: 13px; font-weight: 400; }
+    .remember input { width: auto; }
+    button { margin-top: 14px; padding: 12px; border: 0; background: #5fb3ff; color: #07101c; font-weight: 800; cursor: pointer; }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    #error { min-height: 20px; margin-top: 12px; color: #ff8787; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>H1Emu Web Editor</h1>
+    <p>Login to open the live ZoneServer map editor.</p>
+    <form id="login-form">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <label class="remember"><input id="remember-password" type="checkbox"> Remember password on this browser</label>
+      <button id="submit" type="submit">Unlock Editor</button>
+      <div id="error" role="alert"></div>
+    </form>
+  </main>
+  <script>
+    const TOKEN_KEY = "h1emu_web_editor_token";
+    const PASSWORD_KEY = "h1emu_web_editor_password";
+    const REMEMBER_KEY = "h1emu_web_editor_remember_password";
+    const AUTO_LOGIN_ATTEMPTED_KEY = "h1emu_web_editor_auto_login_attempted";
+    const form = document.getElementById("login-form");
+    const password = document.getElementById("password");
+    const rememberPassword = document.getElementById("remember-password");
+    const submit = document.getElementById("submit");
+    const error = document.getElementById("error");
+
+    async function openApp(token) {
+      const response = await fetch("/app", { headers: { Authorization: `Bearer ${token}` } });
+      if (!response.ok) throw new Error("Login expired");
+      const html = await response.text();
+      document.open();
+      document.write(html);
+      document.close();
+    }
+
+    async function loginWithPassword(rawPassword) {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: rawPassword })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) throw new Error(data.message || "Login failed");
+      localStorage.setItem(TOKEN_KEY, data.token);
+      return data.token;
+    }
+
+    async function trySavedToken() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const savedPassword = localStorage.getItem(PASSWORD_KEY);
+      try {
+        if (token) await openApp(token);
+      } catch (_) {
+        localStorage.removeItem(TOKEN_KEY);
+        if (savedPassword && !sessionStorage.getItem(AUTO_LOGIN_ATTEMPTED_KEY)) {
+          sessionStorage.setItem(AUTO_LOGIN_ATTEMPTED_KEY, "1");
+          const newToken = await loginWithPassword(savedPassword);
+          await openApp(newToken);
+        }
+      }
+    }
+
+    const savedPassword = localStorage.getItem(PASSWORD_KEY);
+    rememberPassword.checked = localStorage.getItem(REMEMBER_KEY) === "1" || Boolean(savedPassword);
+    if (savedPassword) password.value = savedPassword;
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      submit.disabled = true;
+      try {
+        if (rememberPassword.checked) {
+          localStorage.setItem(PASSWORD_KEY, password.value);
+          localStorage.setItem(REMEMBER_KEY, "1");
+        } else {
+          localStorage.removeItem(PASSWORD_KEY);
+          localStorage.removeItem(REMEMBER_KEY);
+        }
+        const token = await loginWithPassword(password.value);
+        await openApp(token);
+      } catch (err) {
+        error.textContent = err.message || "Login failed";
+      } finally {
+        submit.disabled = false;
+      }
+    });
+
+    trySavedToken();
+  </script>
+</body>
+</html>

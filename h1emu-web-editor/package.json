@@ -1,0 +1,7 @@
+{
+  "name": "h1emu-web-editor",
+  "version": "0.1.0",
+  "description": "Password-protected browser map editor for H1Emu ZoneServer2016",
+  "main": "plugin.js",
+  "dependencies": {}
+}

@@ -1,0 +1,4 @@
+port: 8380
+bindAddress: 127.0.0.1
+password: "change-me"
+updateRateHz: 10

@@ -1,0 +1,1946 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>H1Emu 3D Web Editor</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, Helvetica, sans-serif; --panel: rgba(8, 12, 18, 0.9); --line: #2b3d57; --accent: #64b7ff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; height: 100vh; overflow: hidden; background: #05070b; color: #edf3ff; }
+    #view, #overlay { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+    #view { cursor: crosshair; }
+    #overlay { pointer-events: none; }
+    #topbar { position: fixed; left: 14px; top: 14px; display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); backdrop-filter: blur(12px); }
+    #status { color: #9db0cb; font-size: 13px; }
+    #panel { position: fixed; top: 14px; right: 14px; bottom: 14px; width: min(390px, calc(100vw - 28px)); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); backdrop-filter: blur(12px); box-shadow: 0 18px 70px rgba(0, 0, 0, 0.34); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    h2 { margin: 18px 0 8px; font-size: 13px; color: #9db0cb; letter-spacing: 0.08em; text-transform: uppercase; }
+    button, input, select { border-radius: 8px; border: 1px solid #3a4d6c; background: #101824; color: #edf3ff; }
+    button { padding: 8px 10px; cursor: pointer; font-weight: 700; }
+    button.primary { border-color: #5fb3ff; background: #5fb3ff; color: #07101c; }
+    button.danger { border-color: #8e4351; color: #ffacb7; }
+    button:disabled, input:disabled { opacity: 0.55; cursor: not-allowed; }
+    label { display: block; margin: 10px 0 5px; color: #b5c3d8; font-size: 13px; }
+    input, select { width: 100%; padding: 8px 9px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > * { flex: 1; }
+    #object-list { max-height: 250px; overflow: auto; border: 1px solid #23334a; border-radius: 9px; }
+    .object-row { display: block; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-bottom: 1px solid #1b293d; border-radius: 0; background: transparent; color: #dce7f7; font-weight: 400; }
+    .object-row:hover, .object-row.active { background: #17263a; }
+    .muted { color: #93a4bd; }
+    .pill { display: inline-block; padding: 3px 7px; border-radius: 999px; background: #16263b; color: #a9cffd; font-size: 12px; }
+    #crosshair { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none; opacity: 0.55; }
+    #crosshair:before, #crosshair:after { content: ""; position: absolute; background: #d7ecff; }
+    #crosshair:before { left: 8px; top: 0; width: 2px; height: 18px; }
+    #crosshair:after { left: 0; top: 8px; width: 18px; height: 2px; }
+    #pending-bar { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 12px 16px; border: 1px solid #d9a441; border-radius: 12px; background: var(--panel); backdrop-filter: blur(12px); box-shadow: 0 12px 44px rgba(0, 0, 0, 0.45); z-index: 20; }
+    #pending-bar strong { color: #ffd24d; }
+    @media (max-width: 760px) {
+      #panel { top: auto; left: 10px; right: 10px; bottom: 10px; width: auto; max-height: 48vh; }
+      #topbar { left: 10px; top: 10px; right: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+  <canvas id="overlay"></canvas>
+  <div id="crosshair"></div>
+  <div id="pending-bar" hidden>
+    <strong>Done moving?</strong>
+    <span id="pending-text" class="muted"></span>
+    <button id="pending-apply" class="primary">Send to server</button>
+    <button id="pending-revert" class="danger">Revert</button>
+  </div>
+  <div id="topbar">
+    <strong>H1Emu WebGL Editor</strong>
+    <span id="status">connecting...</span>
+    <button id="logout" class="danger">Logout</button>
+  </div>
+  <aside id="panel">
+    <h1>Construction Editor</h1>
+    <div class="muted"><span id="object-count">0</span> constructions, <span id="rendered-count">0</span> GPU instances, <span id="player-count">0</span> players</div>
+    <div class="muted" style="margin-top:8px">Hold right click to look and use WASD/QE, mouse wheel zooms. Left click a construction model to select it, then drag the colored gizmo arrows to move it or the yellow ring to rotate it.</div>
+    <h2>Camera</h2>
+    <div class="row">
+      <button id="home">Home</button>
+      <button id="topdown">Top Down</button>
+      <button id="to-selected">Go To Selected</button>
+    </div>
+    <label for="speed">Move speed</label>
+    <input id="speed" type="number" min="1" max="2000" step="10" value="180">
+    <label for="render-distance">Cube render distance</label>
+    <input id="render-distance" type="number" min="100" max="12000" step="100" value="2500">
+    <label for="max-rendered">Max GPU cubes</label>
+    <input id="max-rendered" type="number" min="100" max="200000" step="100" value="10000">
+    <h2>World Objects</h2>
+    <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="world-toggle" type="checkbox" checked style="width:auto;margin:0"> Show streets, houses &amp; decor</label>
+    <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="trees-toggle" type="checkbox" checked style="width:auto;margin:0"> Show trees</label>
+    <label for="world-distance">World draw distance <span id="world-distance-value" class="muted">1200 m</span></label>
+    <input id="world-distance" type="range" min="200" max="4000" step="100" value="1200" style="padding:0">
+    <h2>Filters</h2>
+    <select id="kind-filter"><option value="">All object kinds</option></select>
+    <label for="search">Search</label>
+    <input id="search" type="search" placeholder="id, name, kind, item/model id">
+    <h2>Selected</h2>
+    <div id="empty-selection" class="muted">Click a construction to select it. Hold Shift and click to select several at once.</div>
+    <div id="selection" hidden>
+      <div id="selection-summary" style="margin-bottom:8px; font-weight:700; color:#ffd24d"></div>
+      <div id="selection-list" style="display:none; max-height:130px; overflow:auto; border:1px solid #23334a; border-radius:8px; margin-bottom:8px"></div>
+      <div><span id="selected-kind" class="pill"></span> <span id="selected-source" class="pill"></span></div>
+      <label>Name</label><input id="selected-name" readonly>
+      <label>ID</label><input id="selected-id" readonly>
+      <div class="grid">
+        <div><label>X</label><input id="pos-x" type="number" step="0.01"></div>
+        <div><label>Y</label><input id="pos-y" type="number" step="0.01"></div>
+        <div><label>Z</label><input id="pos-z" type="number" step="0.01"></div>
+      </div>
+      <div class="row">
+        <div><label>Yaw deg</label><input id="yaw" type="number" step="0.1"></div>
+        <div><label>Scale</label><input id="scale" type="number" min="0.01" step="0.01"></div>
+      </div>
+      <div class="row" style="margin-top: 12px">
+        <button id="apply" class="primary">Apply Live Transform</button>
+        <button id="copy-pos">Camera Here</button>
+      </div>
+      <div id="readonly-note" class="muted" style="margin-top:8px" hidden>Static database cubes are read-only until they become live server entities.</div>
+    </div>
+    <h2>Objects</h2>
+    <div id="object-list"></div>
+  </aside>
+  <script>
+    (() => {
+      const TOKEN_KEY = "h1emu_web_editor_token";
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (!token) location.reload();
+
+      const COLORS = {
+        foundation: "#65df99", simple: "#ffc857", door: "#ff815f", lootable: "#d38cff",
+        worldLootable: "#a589ff", worldSimple: "#6cc5ff", lootableProp: "#f779b7", taskProp: "#d0df72",
+        crate: "#d29a5a", destroyable: "#9ea7b8", worldDoor: "#ffab66", vehicle: "#70c7ff",
+        npc: "#ff4f5f", spawnedItem: "#ffffff", lootbag: "#e0cc7a", trap: "#ff5050", explosive: "#ff2525",
+        temporary: "#d2d2d2", staticProp: "#6d7b91", itemSpawner: "#ffffff", npcSpawner: "#ff5968",
+        vehicleSpawner: "#72d5ff", speedTree: "#3ec66b"
+      };
+
+      const canvas = document.getElementById("view");
+      const overlay = document.getElementById("overlay");
+      const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
+      const ctx = overlay.getContext("2d");
+      const statusEl = document.getElementById("status");
+      const objectCount = document.getElementById("object-count");
+      const renderedCount = document.getElementById("rendered-count");
+      const playerCount = document.getElementById("player-count");
+      const kindFilter = document.getElementById("kind-filter");
+      const search = document.getElementById("search");
+      const objectList = document.getElementById("object-list");
+      const selection = document.getElementById("selection");
+      const emptySelection = document.getElementById("empty-selection");
+      const selectionSummary = document.getElementById("selection-summary");
+      const selectionListEl = document.getElementById("selection-list");
+      const readonlyNote = document.getElementById("readonly-note");
+      const speedInput = document.getElementById("speed");
+      const renderDistanceInput = document.getElementById("render-distance");
+      const maxRenderedInput = document.getElementById("max-rendered");
+      const worldToggle = document.getElementById("world-toggle");
+      const worldDistance = document.getElementById("world-distance");
+      const worldDistanceValue = document.getElementById("world-distance-value");
+      const treesToggle = document.getElementById("trees-toggle");
+      const pendingBar = document.getElementById("pending-bar");
+      const pendingText = document.getElementById("pending-text");
+      const fields = {
+        kind: document.getElementById("selected-kind"), source: document.getElementById("selected-source"),
+        name: document.getElementById("selected-name"), id: document.getElementById("selected-id"),
+        x: document.getElementById("pos-x"), y: document.getElementById("pos-y"), z: document.getElementById("pos-z"),
+        yaw: document.getElementById("yaw"), scale: document.getElementById("scale")
+      };
+      const applyButton = document.getElementById("apply");
+
+      let ws;
+      let objects = new Map();
+      let players = [];
+      let selectedId = "";              // primary selection (drives the detail panel)
+      const selectedIds = new Set();    // full multi-selection set (includes primary)
+      const isSelected = (id) => selectedIds.has(id);
+      let projectedObjects = [];
+      let gizmoHandles = [];
+      let activeGizmo = null;
+      let filteredCache = [];
+      let spatialIndex = new Map();
+      let lastTime = performance.now();
+      let fps = 0;
+      let fpsFrames = 0;
+      let fpsLastTime = performance.now();
+      let dragging = false;
+      let rightLook = false;
+      let dragStart = null;
+      const keys = new Set();
+      const spatialCellSize = 256;
+      const camera = { x: 0, y: 650, z: -5200, yaw: 0, pitch: -0.08, fov: 760 };
+
+      if (!gl) {
+        statusEl.textContent = "WebGL2 unavailable";
+        return;
+      }
+
+      const gpu = createGpuRenderer(gl);
+      const terrain = { vao: null, indexCount: 0, loaded: false };
+
+      // Static zone objects (roads, buildings, decor) rendered as placeholder boxes.
+      const world = { loaded: false, count: 0, px: null, py: null, pz: null, yaw: null, scl: null, nameIdx: null, names: [], grid: new Map(), cache: [], cacheKey: "", cachePos: null, dirty: true };
+      const WORLD_COLORS = {
+        road: [0.23, 0.25, 0.29], sidewalk: [0.42, 0.44, 0.48], bridge: [0.4, 0.35, 0.28],
+        wreck: [0.5, 0.42, 0.36], fence: [0.56, 0.58, 0.4], rock: [0.52, 0.52, 0.55],
+        sign: [0.85, 0.77, 0.38], structure: [0.72, 0.53, 0.35], prop: [0.5, 0.6, 0.72]
+      };
+
+      function loadWorldObjects() {
+        fetch("/api/zone-objects", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("no zone objects"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const view = new DataView(buf);
+            let off = 0;
+            const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+            off += 4;
+            if (magic !== "ZOB1") throw new Error("bad zone objects magic");
+            const nameLen = view.getUint32(off, true); off += 4;
+            world.names = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, off, nameLen))); off += nameLen;
+            const count = view.getUint32(off, true); off += 4;
+            world.count = count;
+            world.px = new Float32Array(count); world.py = new Float32Array(count); world.pz = new Float32Array(count);
+            world.yaw = new Float32Array(count); world.scl = new Float32Array(count); world.nameIdx = new Uint32Array(count);
+            for (let i = 0; i < count; i++) {
+              world.px[i] = view.getFloat32(off, true);
+              world.py[i] = view.getFloat32(off + 4, true);
+              world.pz[i] = view.getFloat32(off + 8, true);
+              world.yaw[i] = view.getFloat32(off + 12, true);
+              world.scl[i] = view.getFloat32(off + 16, true);
+              world.nameIdx[i] = view.getUint32(off + 20, true);
+              off += 24;
+            }
+            for (let i = 0; i < count; i++) {
+              const key = `${Math.floor(world.px[i] / 256)},${Math.floor(world.pz[i] / 256)}`;
+              let bucket = world.grid.get(key);
+              if (!bucket) { bucket = []; world.grid.set(key, bucket); }
+              bucket.push(i);
+            }
+            world.loaded = true;
+            world.dirty = true;
+            console.log(`[world] Loaded ${count} zone objects (${world.names.length} actor types)`);
+          })
+          .catch((e) => console.log(`[world] Not available: ${e.message}`));
+      }
+
+      // Real 3D geometry with UVs + textures (from world-models.bin "ZMD2"),
+      // covering zone actors and construction models, rendered instanced.
+      const wm = { loaded: false, actors: [], entries: [], constructionModels: {}, textures: [], texCache: [], program: null, vao: null, instBuf: null, conInstBuf: null, uniforms: null, locIPos: -1, locIYS: -1, batches: [], version: -1, conBatches: [], conKey: "", conCachePos: null };
+      const MODEL_TRI_BUDGET = 8000000;
+      let objectsRev = 0;
+
+      function loadWorldModels() {
+        fetch("/api/world-models", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("no world models"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const view = new DataView(buf);
+            const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+            if (magic !== "ZMD2") throw new Error("bad world models magic");
+            const headerLen = view.getUint32(4, true);
+            const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, headerLen)));
+            wm.constructionModels = header.constructionModels || {};
+            wm.textures = header.textures || [];
+            wm.texCache = new Array(wm.textures.length).fill(undefined);
+            const entryCount = header.worldActorCount + Object.keys(wm.constructionModels).length;
+            let off = 8 + headerLen;
+            const metas = [];
+            let totalV = 0, totalI = 0;
+            for (let a = 0; a < entryCount; a++) {
+              const vc = view.getUint32(off, true), ic = view.getUint32(off + 4, true), texIdx = view.getInt32(off + 8, true);
+              metas.push({ vc, ic, texIdx, srcOff: off + 12 });
+              off += 12 + vc * 20 + ic * 4;
+              totalV += vc; totalI += ic;
+            }
+            const verts = new Float32Array(totalV * 5);
+            const indices = new Uint32Array(totalI);
+            let vBase = 0, iBase = 0;
+            wm.entries = metas.map((m) => {
+              const entry = { indexStart: iBase, indexCount: m.ic, tris: m.ic / 3, hasModel: m.vc > 0, texIdx: m.texIdx, bbox: null };
+              if (m.vc) {
+                const srcVerts = new Float32Array(buf, m.srcOff, m.vc * 5);
+                verts.set(srcVerts, vBase * 5);
+                let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+                for (let v = 0; v < m.vc; v++) {
+                  const x = srcVerts[v * 5], y = srcVerts[v * 5 + 1], z = srcVerts[v * 5 + 2];
+                  if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+                  if (y < mny) mny = y; if (y > mxy) mxy = y;
+                  if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+                }
+                entry.bbox = [[mnx, mny, mnz], [mxx, mxy, mxz]];
+                const src = new Uint32Array(buf, m.srcOff + m.vc * 20, m.ic);
+                for (let i = 0; i < m.ic; i++) indices[iBase + i] = src[i] + vBase;
+                vBase += m.vc; iBase += m.ic;
+              }
+              return entry;
+            });
+            wm.actors = wm.entries.slice(0, header.worldActorCount);
+
+            const vs = `#version 300 es
+              precision highp float;
+              in vec3 aPos;
+              in vec2 aUV;
+              in vec3 iPosition;
+              in vec2 iYawScale;
+              uniform vec3 uCamera;
+              uniform vec2 uSinCosYaw;
+              uniform vec2 uSinCosPitch;
+              uniform vec2 uScreenScale;
+              out vec3 vWorld;
+              out vec2 vUV;
+              void main() {
+                float cy = cos(iYawScale.x);
+                float sy = sin(iYawScale.x);
+                vec3 l = aPos * iYawScale.y;
+                vec3 world = vec3(cy * l.x - sy * l.z, l.y, sy * l.x + cy * l.z) + iPosition;
+                vWorld = world;
+                vUV = aUV;
+                vec3 d = world - uCamera;
+                float camX = uSinCosYaw.y * d.x - uSinCosYaw.x * d.z;
+                float z1 = uSinCosYaw.x * d.x + uSinCosYaw.y * d.z;
+                float camY = uSinCosPitch.y * d.y - uSinCosPitch.x * z1;
+                float camZ = uSinCosPitch.x * d.y + uSinCosPitch.y * z1;
+                gl_Position = vec4(-camX * uScreenScale.x, camY * uScreenScale.y, camZ * ((20000.0+2.0)/(20000.0-2.0)) - (2.0*20000.0*2.0/(20000.0-2.0)), camZ);
+              }`;
+            const fsSrc = `#version 300 es
+              precision mediump float;
+              in vec3 vWorld;
+              in vec2 vUV;
+              uniform vec3 uColor;
+              uniform sampler2D uTex;
+              uniform bool uHasTex;
+              out vec4 outColor;
+              void main() {
+                vec3 n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+                float light = abs(dot(n, normalize(vec3(0.45, 0.85, 0.3))));
+                vec3 base = uHasTex ? texture(uTex, vUV).rgb : uColor;
+                outColor = vec4(base * (0.55 + 0.5 * light), 1.0);
+              }`;
+            wm.program = linkProgram(gl, vs, fsSrc);
+            wm.vao = gl.createVertexArray();
+            gl.bindVertexArray(wm.vao);
+            const vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+            const locPos = gl.getAttribLocation(wm.program, "aPos");
+            gl.enableVertexAttribArray(locPos);
+            gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 20, 0);
+            const locUV = gl.getAttribLocation(wm.program, "aUV");
+            gl.enableVertexAttribArray(locUV);
+            gl.vertexAttribPointer(locUV, 2, gl.FLOAT, false, 20, 12);
+            wm.instBuf = gl.createBuffer();
+            wm.conInstBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, wm.instBuf);
+            wm.locIPos = gl.getAttribLocation(wm.program, "iPosition");
+            wm.locIYS = gl.getAttribLocation(wm.program, "iYawScale");
+            gl.enableVertexAttribArray(wm.locIPos);
+            gl.enableVertexAttribArray(wm.locIYS);
+            gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+            gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+            gl.vertexAttribDivisor(wm.locIPos, 1);
+            gl.vertexAttribDivisor(wm.locIYS, 1);
+            const ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+            gl.bindVertexArray(null);
+            wm.uniforms = {
+              camera: gl.getUniformLocation(wm.program, "uCamera"),
+              yaw: gl.getUniformLocation(wm.program, "uSinCosYaw"),
+              pitch: gl.getUniformLocation(wm.program, "uSinCosPitch"),
+              screenScale: gl.getUniformLocation(wm.program, "uScreenScale"),
+              color: gl.getUniformLocation(wm.program, "uColor"),
+              tex: gl.getUniformLocation(wm.program, "uTex"),
+              hasTex: gl.getUniformLocation(wm.program, "uHasTex"),
+            };
+            wm.loaded = true;
+            world.dirty = true;
+            objectsRev++;
+            console.log(`[world] Loaded models: ${totalV} verts, ${(totalI / 3).toFixed(0)} tris, ${entryCount} entries, ${wm.textures.length} textures`);
+          })
+          .catch((e) => console.log(`[world] Models not available: ${e.message}`));
+      }
+
+      function worldTexture(texIdx) {
+        if (texIdx < 0 || texIdx >= wm.textures.length) return null;
+        const cached = wm.texCache[texIdx];
+        if (cached !== undefined) return cached;
+        wm.texCache[texIdx] = null;
+        const s3tc = gl.getExtension("WEBGL_compressed_texture_s3tc");
+        if (!s3tc) return null;
+        fetch(`/api/world-texture/${encodeURIComponent(wm.textures[texIdx])}`, { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("missing"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const dds = parseDDS(buf);
+            if (!dds) return;
+            const tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            const fmt = dds.format === "rgba" ? s3tc.COMPRESSED_RGBA_S3TC_DXT5_EXT : s3tc.COMPRESSED_RGB_S3TC_DXT1_EXT;
+            for (let m = 0; m < dds.levels.length; m++) {
+              const lvl = dds.levels[m];
+              gl.compressedTexImage2D(gl.TEXTURE_2D, m, fmt, lvl.width, lvl.height, 0, lvl.data);
+            }
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, dds.levels.length > 1 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            wm.texCache[texIdx] = tex;
+          })
+          .catch(() => {});
+        return null;
+      }
+
+      function constructionEntryFor(obj) {
+        if (!wm.loaded || !obj || !isConstructionKind(obj.kind)) return null;
+        const idx = wm.constructionModels[obj.modelId];
+        if (idx === undefined) return null;
+        const entry = wm.entries[idx];
+        return entry && entry.hasModel ? entry : null;
+      }
+
+      function rebuildConstructionBatches() {
+        // Only pieces within the cube render distance are batched; rebuilt when
+        // objects change, the setting changes, or the camera moves far enough.
+        const renderDistance = Math.max(100, Number(renderDistanceInput.value) || 2500);
+        const conKey = `${objectsRev},${renderDistance}`;
+        const moved = wm.conCachePos ? Math.hypot(camera.x - wm.conCachePos[0], camera.z - wm.conCachePos[1]) : Infinity;
+        if (wm.conKey === conKey && moved < 64) return;
+        const renderDistanceSq = (renderDistance + 64) * (renderDistance + 64);
+        const groups = new Map();
+        let count = 0;
+        for (const obj of objects.values()) {
+          if (isSelected(obj.id)) continue;
+          const entry = constructionEntryFor(obj);
+          if (!entry) continue;
+          const dx = obj.pos[0] - camera.x, dz = obj.pos[2] - camera.z;
+          if (dx * dx + dz * dz > renderDistanceSq) continue;
+          let group = groups.get(entry);
+          if (!group) { group = []; groups.set(entry, group); }
+          group.push(obj);
+          count++;
+        }
+        const data = new Float32Array(count * 5);
+        wm.conBatches = [];
+        let o = 0, inst = 0;
+        for (const [entry, list] of groups) {
+          wm.conBatches.push({ actor: entry, texIdx: entry.texIdx, color: [0.76, 0.72, 0.63], instOffset: inst, instCount: list.length });
+          for (const obj of list) {
+            data[o] = obj.pos[0]; data[o + 1] = obj.pos[1]; data[o + 2] = obj.pos[2];
+            data[o + 3] = -(Number(obj.euler) || 0);
+            data[o + 4] = Number(obj.scale?.[0]) || 1;
+            o += 5;
+          }
+          inst += list.length;
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, wm.conInstBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        wm.conKey = conKey;
+        wm.conCachePos = [camera.x, camera.z];
+      }
+
+      function rebuildModelBatches() {
+        const maxDist = Math.max(200, Number(worldDistance.value) || 1200);
+        worldCandidates(maxDist);
+        if (wm.version === world.version) return;
+        const groups = new Map();
+        let tris = 0, count = 0;
+        for (const [i] of world.cache) {
+          const actor = wm.actors[world.nameIdx[i]];
+          if (!actor || !actor.hasModel) continue;
+          if (tris + actor.tris > MODEL_TRI_BUDGET) continue;
+          tris += actor.tris;
+          count++;
+          let group = groups.get(world.nameIdx[i]);
+          if (!group) { group = []; groups.set(world.nameIdx[i], group); }
+          group.push(i);
+        }
+        const data = new Float32Array(count * 5);
+        wm.batches = [];
+        let o = 0, inst = 0;
+        for (const [nameIdx, list] of groups) {
+          const meta = world.names[nameIdx];
+          wm.batches.push({ actor: wm.actors[nameIdx], texIdx: wm.actors[nameIdx].texIdx, color: WORLD_COLORS[meta.c] || WORLD_COLORS.prop, instOffset: inst, instCount: list.length });
+          for (const i of list) {
+            data[o] = world.px[i]; data[o + 1] = world.py[i]; data[o + 2] = world.pz[i];
+            data[o + 3] = -world.yaw[i]; // sign verified against baked terrain roads
+            data[o + 4] = world.scl[i] || 1;
+            o += 5;
+          }
+          inst += list.length;
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, wm.instBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        wm.version = world.version;
+      }
+
+      function renderWorldModels() {
+        if (!wm.loaded) return;
+        const drawWorld = world.loaded && worldToggle.checked;
+        if (drawWorld) rebuildModelBatches();
+        rebuildConstructionBatches();
+        const drawSets = [];
+        if (drawWorld && wm.batches.length) drawSets.push([wm.instBuf, wm.batches]);
+        if (wm.conBatches.length) drawSets.push([wm.conInstBuf, wm.conBatches]);
+        if (!drawSets.length) return;
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(wm.program);
+        gl.bindVertexArray(wm.vao);
+        gl.uniform3f(wm.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(wm.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(wm.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(wm.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform1i(wm.uniforms.tex, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        for (const [instBuf, batches] of drawSets) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+          for (const batch of batches) {
+            const tex = worldTexture(batch.texIdx);
+            if (tex) {
+              gl.uniform1i(wm.uniforms.hasTex, 1);
+              gl.bindTexture(gl.TEXTURE_2D, tex);
+            } else {
+              gl.uniform1i(wm.uniforms.hasTex, 0);
+            }
+            gl.uniform3f(wm.uniforms.color, batch.color[0], batch.color[1], batch.color[2]);
+            gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, batch.instOffset * 20);
+            gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, batch.instOffset * 20 + 12);
+            gl.drawElementsInstanced(gl.TRIANGLES, batch.actor.indexCount, gl.UNSIGNED_INT, batch.actor.indexStart * 4, batch.instCount);
+          }
+        }
+        gl.bindVertexArray(null);
+        gl.enable(gl.CULL_FACE);
+      }
+
+      function worldCandidates(maxDist) {
+        const cellX = Math.floor(camera.x / 256), cellZ = Math.floor(camera.z / 256);
+        const key = `${cellX},${cellZ},${maxDist}`;
+        const moved = world.cachePos ? Math.hypot(camera.x - world.cachePos[0], camera.z - world.cachePos[1]) : Infinity;
+        if (!world.dirty && world.cacheKey === key && moved < 48) return world.cache;
+        const reach = Math.ceil(maxDist / 256);
+        const maxDistSq = maxDist * maxDist;
+        const out = [];
+        for (let x = cellX - reach; x <= cellX + reach; x++) {
+          for (let z = cellZ - reach; z <= cellZ + reach; z++) {
+            const bucket = world.grid.get(`${x},${z}`);
+            if (!bucket) continue;
+            for (const i of bucket) {
+              const dx = world.px[i] - camera.x, dz = world.pz[i] - camera.z;
+              const distSq = dx * dx + dz * dz;
+              if (distSq > maxDistSq) continue;
+              const meta = world.names[world.nameIdx[i]];
+              const reachLimit = (meta.rd || 200) * 3;
+              if (distSq > reachLimit * reachLimit) continue;
+              out.push([i, distSq]);
+            }
+          }
+        }
+        out.sort((a, b) => a[1] - b[1]);
+        world.cache = out;
+        world.cacheKey = key;
+        world.cachePos = [camera.x, camera.z];
+        world.dirty = false;
+        world.version = (world.version || 0) + 1;
+        return out;
+      }
+
+      function addWorldObjectEntries(entries, maxRendered) {
+        if (!world.loaded || !worldToggle.checked) return;
+        const maxDist = Math.max(200, Number(worldDistance.value) || 1200);
+        for (const [i] of worldCandidates(maxDist)) {
+          if (entries.length >= maxRendered) break;
+          // Actors with a real 3D model are drawn by renderWorldModels() instead.
+          if (wm.loaded && wm.actors[world.nameIdx[i]]?.hasModel) continue;
+          const meta = world.names[world.nameIdx[i]];
+          const s = world.scl[i] || 1;
+          const color = WORLD_COLORS[meta.c] || WORLD_COLORS.prop;
+          entries.push({
+            obj: null,
+            center: [world.px[i], world.py[i] + (meta.e[1] * s) / 2, world.pz[i]],
+            scale: [meta.e[0] * s, meta.e[1] * s, meta.e[2] * s],
+            color: [color[0], color[1], color[2], 1],
+            yaw: world.yaw[i],
+            distSq: 0,
+          });
+        }
+      }
+
+      // Speed trees: procedural low-poly meshes per tree type, instanced.
+      const trees = { loaded: false, count: 0, px: null, py: null, pz: null, tid: null, grid: new Map(), vao: null, instBuf: null, parts: null, batches: [], cacheKey: "", cachePos: null, dirty: true };
+      const TRUNK_COLOR = [0.33, 0.25, 0.17];
+      const TREE_TYPES = {
+        1: { kind: "conifer", h: 5, r: 1.6, color: [0.16, 0.34, 0.2] },
+        2: { kind: "conifer", h: 14, r: 3.4, color: [0.13, 0.3, 0.18] },
+        10: { kind: "conifer", h: 16, r: 3.6, color: [0.12, 0.28, 0.17] },
+        3: { kind: "deciduous", h: 9, r: 3, color: [0.4, 0.33, 0.2] },
+        4: { kind: "deciduous", h: 3.5, r: 1.4, color: [0.27, 0.43, 0.18] },
+        5: { kind: "deciduous", h: 11, r: 4, color: [0.34, 0.4, 0.15] },
+        6: { kind: "deciduous", h: 11, r: 4, color: [0.24, 0.42, 0.16] },
+        8: { kind: "deciduous", h: 10, r: 3.2, color: [0.3, 0.44, 0.22] },
+        12: { kind: "deciduous", h: 12, r: 4.5, color: [0.25, 0.38, 0.16] },
+        14: { kind: "deciduous", h: 10, r: 3.2, color: [0.31, 0.45, 0.22] },
+        15: { kind: "deciduous", h: 13, r: 5, color: [0.24, 0.4, 0.17] },
+        16: { kind: "deciduous", h: 6, r: 2.4, color: [0.26, 0.42, 0.18] },
+        17: { kind: "deciduous", h: 7, r: 2.8, color: [0.26, 0.42, 0.18] },
+        20: { kind: "deciduous", h: 5, r: 2.4, color: [0.3, 0.46, 0.2] },
+        7: { kind: "bush", h: 2.4, r: 1.8, color: [0.46, 0.46, 0.5] },
+        19: { kind: "bush", h: 1.8, r: 1.4, color: [0.43, 0.43, 0.46] },
+        9: { kind: "bush", h: 1.8, r: 1.2, color: [0.22, 0.36, 0.15] },
+        11: { kind: "bush", h: 2.5, r: 1.5, color: [0.25, 0.4, 0.17] },
+        13: { kind: "bush", h: 1.5, r: 1.3, color: [0.16, 0.28, 0.12] },
+        18: { kind: "bush", h: 1.5, r: 1.2, color: [0.24, 0.38, 0.16] },
+        21: { kind: "bush", h: 1.8, r: 1.5, color: [0.23, 0.37, 0.15] },
+      };
+
+      function buildTreeGeometry() {
+        const verts = [];
+        const indices = [];
+        const vert = (x, y, z) => { verts.push(x, y, z, 0, 0); return verts.length / 5 - 1; };
+        function cone(r, yBase, h, seg) {
+          const apex = vert(0, yBase + h, 0);
+          const ring = [];
+          for (let s = 0; s < seg; s++) {
+            const a = (s / seg) * Math.PI * 2;
+            ring.push(vert(Math.cos(a) * r, yBase, Math.sin(a) * r));
+          }
+          for (let s = 0; s < seg; s++) indices.push(apex, ring[s], ring[(s + 1) % seg]);
+        }
+        function octa(rx, ry, rz, yc) {
+          const top = vert(0, yc + ry, 0), bottom = vert(0, yc - ry, 0);
+          const ring = [vert(rx, yc, 0), vert(0, yc, rz), vert(-rx, yc, 0), vert(0, yc, -rz)];
+          for (let s = 0; s < 4; s++) {
+            indices.push(top, ring[s], ring[(s + 1) % 4]);
+            indices.push(bottom, ring[(s + 1) % 4], ring[s]);
+          }
+        }
+        function trunk(r, h) {
+          const c0 = [vert(r, 0, r), vert(-r, 0, r), vert(-r, 0, -r), vert(r, 0, -r)];
+          const c1 = [vert(r, h, r), vert(-r, h, r), vert(-r, h, -r), vert(r, h, -r)];
+          for (let s = 0; s < 4; s++) {
+            indices.push(c0[s], c0[(s + 1) % 4], c1[(s + 1) % 4], c0[s], c1[(s + 1) % 4], c1[s]);
+          }
+        }
+        const parts = {};
+        for (const [tid, t] of Object.entries(TREE_TYPES)) {
+          const list = [];
+          if (t.kind === "conifer") {
+            let s = indices.length;
+            trunk(0.22, t.h * 0.25);
+            list.push({ indexStart: s, indexCount: indices.length - s, color: TRUNK_COLOR });
+            s = indices.length;
+            cone(t.r, t.h * 0.18, t.h * 0.82, 7);
+            list.push({ indexStart: s, indexCount: indices.length - s, color: t.color });
+          } else if (t.kind === "deciduous") {
+            let s = indices.length;
+            trunk(0.26, t.h * 0.55);
+            list.push({ indexStart: s, indexCount: indices.length - s, color: TRUNK_COLOR });
+            s = indices.length;
+            octa(t.r, t.h * 0.4, t.r, t.h * 0.62);
+            list.push({ indexStart: s, indexCount: indices.length - s, color: t.color });
+          } else {
+            const s = indices.length;
+            octa(t.r, t.h * 0.55, t.r * 0.9, t.h * 0.5);
+            list.push({ indexStart: s, indexCount: indices.length - s, color: t.color });
+          }
+          parts[tid] = list;
+        }
+        return { verts: new Float32Array(verts), indices: new Uint32Array(indices), parts };
+      }
+
+      function loadSpeedTrees() {
+        fetch("/api/speedtrees", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("no speed trees"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const view = new DataView(buf);
+            const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+            if (magic !== "TRE1") throw new Error("bad speed trees magic");
+            const count = view.getUint32(4, true);
+            trees.count = count;
+            trees.px = new Float32Array(count); trees.py = new Float32Array(count); trees.pz = new Float32Array(count);
+            trees.tid = new Uint8Array(count);
+            let off = 8;
+            for (let i = 0; i < count; i++) {
+              trees.px[i] = view.getFloat32(off, true);
+              trees.py[i] = view.getFloat32(off + 4, true);
+              trees.pz[i] = view.getFloat32(off + 8, true);
+              trees.tid[i] = view.getUint32(off + 12, true) & 0xff;
+              off += 16;
+            }
+            for (let i = 0; i < count; i++) {
+              const key = `${Math.floor(trees.px[i] / 256)},${Math.floor(trees.pz[i] / 256)}`;
+              let bucket = trees.grid.get(key);
+              if (!bucket) { bucket = []; trees.grid.set(key, bucket); }
+              bucket.push(i);
+            }
+            trees.loaded = true;
+            trees.dirty = true;
+            console.log(`[world] Loaded ${count} speed trees`);
+          })
+          .catch((e) => console.log(`[world] Trees not available: ${e.message}`));
+      }
+
+      function ensureTreeGl() {
+        if (trees.vao || !wm.loaded) return;
+        const geo = buildTreeGeometry();
+        trees.parts = geo.parts;
+        trees.vao = gl.createVertexArray();
+        gl.bindVertexArray(trees.vao);
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, geo.verts, gl.STATIC_DRAW);
+        const locPos = gl.getAttribLocation(wm.program, "aPos");
+        gl.enableVertexAttribArray(locPos);
+        gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 20, 0);
+        const locUV = gl.getAttribLocation(wm.program, "aUV");
+        gl.enableVertexAttribArray(locUV);
+        gl.vertexAttribPointer(locUV, 2, gl.FLOAT, false, 20, 12);
+        trees.instBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, trees.instBuf);
+        gl.enableVertexAttribArray(wm.locIPos);
+        gl.enableVertexAttribArray(wm.locIYS);
+        gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+        gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+        gl.vertexAttribDivisor(wm.locIPos, 1);
+        gl.vertexAttribDivisor(wm.locIYS, 1);
+        const ibo = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.indices, gl.STATIC_DRAW);
+        gl.bindVertexArray(null);
+      }
+
+      function rebuildTreeBatches() {
+        const maxDist = Math.max(200, Number(worldDistance.value) || 1200);
+        const cellX = Math.floor(camera.x / 256), cellZ = Math.floor(camera.z / 256);
+        const key = `${cellX},${cellZ},${maxDist}`;
+        const moved = trees.cachePos ? Math.hypot(camera.x - trees.cachePos[0], camera.z - trees.cachePos[1]) : Infinity;
+        if (!trees.dirty && trees.cacheKey === key && moved < 64) return;
+        const reach = Math.ceil(maxDist / 256);
+        const maxDistSq = maxDist * maxDist;
+        const groups = new Map();
+        let count = 0;
+        for (let x = cellX - reach; x <= cellX + reach; x++) {
+          for (let z = cellZ - reach; z <= cellZ + reach; z++) {
+            const bucket = trees.grid.get(`${x},${z}`);
+            if (!bucket) continue;
+            for (const i of bucket) {
+              const dx = trees.px[i] - camera.x, dz = trees.pz[i] - camera.z;
+              if (dx * dx + dz * dz > maxDistSq) continue;
+              const tid = trees.tid[i];
+              if (!trees.parts[tid]) continue;
+              let group = groups.get(tid);
+              if (!group) { group = []; groups.set(tid, group); }
+              group.push(i);
+              count++;
+            }
+          }
+        }
+        const data = new Float32Array(count * 5);
+        trees.batches = [];
+        let o = 0, inst = 0;
+        for (const [tid, list] of groups) {
+          trees.batches.push({ tid, instOffset: inst, instCount: list.length });
+          for (const i of list) {
+            data[o] = trees.px[i]; data[o + 1] = trees.py[i]; data[o + 2] = trees.pz[i];
+            data[o + 3] = (i % 31) * 0.2027;
+            data[o + 4] = 0.8 + ((i * 2654435761) % 100) / 250;
+            o += 5;
+          }
+          inst += list.length;
+        }
+        gl.bindBuffer(gl.ARRAY_BUFFER, trees.instBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        trees.cacheKey = key;
+        trees.cachePos = [camera.x, camera.z];
+        trees.dirty = false;
+      }
+
+      function renderTrees() {
+        if (!trees.loaded || !wm.loaded || !treesToggle.checked) return;
+        ensureTreeGl();
+        if (!trees.vao) return;
+        rebuildTreeBatches();
+        if (!trees.batches.length) return;
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(wm.program);
+        gl.bindVertexArray(trees.vao);
+        gl.uniform3f(wm.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(wm.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(wm.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(wm.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform1i(wm.uniforms.hasTex, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, trees.instBuf);
+        for (const batch of trees.batches) {
+          gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, batch.instOffset * 20);
+          gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, batch.instOffset * 20 + 12);
+          for (const part of trees.parts[batch.tid]) {
+            gl.uniform3f(wm.uniforms.color, part.color[0], part.color[1], part.color[2]);
+            gl.drawElementsInstanced(gl.TRIANGLES, part.indexCount, gl.UNSIGNED_INT, part.indexStart * 4, batch.instCount);
+          }
+        }
+        gl.bindVertexArray(null);
+        gl.enable(gl.CULL_FACE);
+      }
+
+      function createGpuRenderer(gl) {
+        const vertexSource = `#version 300 es
+          precision highp float;
+          in vec3 aPosition;
+          in vec3 iPosition;
+          in vec3 iScale;
+          in vec4 iColor;
+          in float iYaw;
+          uniform vec3 uCamera;
+          uniform vec2 uSinCosYaw;
+          uniform vec2 uSinCosPitch;
+          uniform vec2 uScreenScale;
+          uniform vec2 uNearFar;
+          out vec4 vColor;
+          void main() {
+            vec3 local = aPosition * iScale;
+            float cy = cos(iYaw);
+            float sy = sin(iYaw);
+            vec3 world = vec3(cy * local.x - sy * local.z, local.y, sy * local.x + cy * local.z) + iPosition;
+            vec3 d = world - uCamera;
+            float camX = uSinCosYaw.y * d.x - uSinCosYaw.x * d.z;
+            float z1 = uSinCosYaw.x * d.x + uSinCosYaw.y * d.z;
+            float camY = uSinCosPitch.y * d.y - uSinCosPitch.x * z1;
+            float camZ = uSinCosPitch.x * d.y + uSinCosPitch.y * z1;
+            float near = uNearFar.x;
+            float far = uNearFar.y;
+            float clipZ = camZ * ((far + near) / (far - near)) - ((2.0 * far * near) / (far - near));
+            // Screen X is mirrored to match the game client's view convention.
+            gl_Position = vec4(-camX * uScreenScale.x, camY * uScreenScale.y, clipZ, camZ);
+            vColor = iColor;
+          }`;
+        const fragmentSource = `#version 300 es
+          precision mediump float;
+          in vec4 vColor;
+          out vec4 outColor;
+          void main() { outColor = vColor; }`;
+        const program = linkProgram(gl, vertexSource, fragmentSource);
+        const vao = gl.createVertexArray();
+        gl.bindVertexArray(vao);
+
+        const cubeBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, cubeBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cubeVertices()), gl.STATIC_DRAW);
+        const aPosition = gl.getAttribLocation(program, "aPosition");
+        gl.enableVertexAttribArray(aPosition);
+        gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
+
+        const instanceBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, instanceBuffer);
+        const stride = 11 * 4;
+        const attrs = [
+          ["iPosition", 3, 0], ["iScale", 3, 3 * 4], ["iColor", 4, 6 * 4], ["iYaw", 1, 10 * 4]
+        ];
+        for (const [name, size, offset] of attrs) {
+          const location = gl.getAttribLocation(program, name);
+          gl.enableVertexAttribArray(location);
+          gl.vertexAttribPointer(location, size, gl.FLOAT, false, stride, offset);
+          gl.vertexAttribDivisor(location, 1);
+        }
+
+        gl.bindVertexArray(null);
+        gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.CULL_FACE);
+        gl.cullFace(gl.BACK);
+        gl.frontFace(gl.CW); // mirrored screen X flips winding
+        return {
+          program, vao, instanceBuffer,
+          uniforms: {
+            camera: gl.getUniformLocation(program, "uCamera"),
+            yaw: gl.getUniformLocation(program, "uSinCosYaw"),
+            pitch: gl.getUniformLocation(program, "uSinCosPitch"),
+            screenScale: gl.getUniformLocation(program, "uScreenScale"),
+            nearFar: gl.getUniformLocation(program, "uNearFar"),
+          }
+        };
+      }
+
+      function compileShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+        return shader;
+      }
+
+      function loadTerrain() {
+        fetch("/api/terrain", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("no terrain"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const view = new DataView(buf);
+            let off = 0;
+            const magic = String.fromCharCode(view.getUint8(off), view.getUint8(off+1), view.getUint8(off+2), view.getUint8(off+3));
+            off += 4;
+            if (magic !== "TRRN") throw new Error("bad terrain magic");
+            const vcount = view.getUint32(off, true); off += 4;
+            const icount = view.getUint32(off, true); off += 4;
+            const chunkCount = view.getUint32(off, true); off += 4;
+
+            const positions = new Float32Array(buf, off, vcount * 3); off += vcount * 12;
+            const colors = new Float32Array(buf, off, vcount * 3); off += vcount * 12;
+            const uvs = new Float32Array(buf, off, vcount * 2); off += vcount * 8;
+            const indices = new Uint32Array(buf, off, icount); off += icount * 4;
+
+            // Parse per-chunk data: firstVert(uint32), indexStart(uint32), indexCount(uint32), z(int32), x(int32)
+            const chunks = [];
+            const texNames = [];
+            for (let i = 0; i < chunkCount; i++) {
+              const firstVert = view.getUint32(off, true); off += 4;
+              const indexStart = view.getUint32(off, true); off += 4;
+              const indexCount = view.getUint32(off, true); off += 4;
+              const z = view.getInt32(off, true); off += 4;
+              const x = view.getInt32(off, true); off += 4;
+              const texName = `Z1_${z}_${x}_colornx.dds`;
+              chunks.push({ texName, indexStart, indexCount, firstVert, center: [x * 64 + 128, 180, z * 64 + 128] });
+              texNames.push(texName);
+            }
+
+            const vs = `#version 300 es
+              precision highp float;
+              in vec3 aPos;
+              in vec3 aColor;
+              in vec2 aUV;
+              uniform vec3 uCamera;
+              uniform vec2 uSinCosYaw;
+              uniform vec2 uSinCosPitch;
+              uniform vec2 uScreenScale;
+              out vec3 vColor;
+              out vec2 vUV;
+              void main() {
+                vec3 d = aPos - uCamera;
+                float camX = uSinCosYaw.y * d.x - uSinCosYaw.x * d.z;
+                float z1 = uSinCosYaw.x * d.x + uSinCosYaw.y * d.z;
+                float camY = uSinCosPitch.y * d.y - uSinCosPitch.x * z1;
+                float camZ = uSinCosPitch.x * d.y + uSinCosPitch.y * z1;
+                gl_Position = vec4(-camX * uScreenScale.x, camY * uScreenScale.y, camZ * ((20000.0+2.0)/(20000.0-2.0)) - (2.0*20000.0*2.0/(20000.0-2.0)), camZ);
+                vColor = aColor;
+                vUV = aUV;
+              }`;
+            const fs = `#version 300 es
+              precision mediump float;
+              in vec3 vColor;
+              in vec2 vUV;
+              uniform sampler2D uTex;
+              uniform bool uHasTex;
+              out vec4 outColor;
+              void main() {
+                if (uHasTex) {
+                  vec4 texColor = texture(uTex, vUV);
+                  outColor = vec4(texColor.rgb, 1.0);
+                } else {
+                  outColor = vec4(vColor, 1.0);
+                }
+              }`;
+            const prog = linkProgram(gl, vs, fs);
+            const vao = gl.createVertexArray();
+            gl.bindVertexArray(vao);
+
+            const posBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            const aPos = gl.getAttribLocation(prog, "aPos");
+            gl.enableVertexAttribArray(aPos);
+            gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+
+            const colBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, colBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+            const aColor = gl.getAttribLocation(prog, "aColor");
+            gl.enableVertexAttribArray(aColor);
+            gl.vertexAttribPointer(aColor, 3, gl.FLOAT, false, 0, 0);
+
+            const uvBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+            const aUV = gl.getAttribLocation(prog, "aUV");
+            gl.enableVertexAttribArray(aUV);
+            gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 0, 0);
+
+            const idxBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+            gl.bindVertexArray(null);
+            terrain.vao = vao;
+            terrain.program = prog;
+            terrain.uniforms = {
+              camera: gl.getUniformLocation(prog, "uCamera"),
+              yaw: gl.getUniformLocation(prog, "uSinCosYaw"),
+              pitch: gl.getUniformLocation(prog, "uSinCosPitch"),
+              screenScale: gl.getUniformLocation(prog, "uScreenScale"),
+              tex: gl.getUniformLocation(prog, "uTex"),
+              hasTex: gl.getUniformLocation(prog, "uHasTex"),
+            };
+            terrain.chunks = chunks;
+            terrain.texCache = {};
+            terrain.loaded = true;
+            console.log(`[terrain] Loaded ${vcount} vertices, ${icount} indices, ${chunkCount} chunks`);
+
+            // Load textures asynchronously
+            terrain.loadPromise = loadTerrainTextures(texNames);
+          })
+          .catch((e) => console.log(`[terrain] Not available: ${e.message}`));
+      }
+
+      function parseDDS(arrayBuffer) {
+        const view = new DataView(arrayBuffer);
+        const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
+        if (magic !== "DDS ") return null;
+
+        const height = view.getUint32(12, true);
+        const width = view.getUint32(16, true);
+        const pitchOrLinear = view.getUint32(20, true);
+        const mipCount = view.getUint32(28, true);
+        const pfFlags = view.getUint32(80, true);
+        const fourCC = view.getUint32(84, true);
+
+        let format = null;
+        let blockSize = 0;
+        if (fourCC === 0x35545844) { // DXT5
+          format = "rgba";
+          blockSize = 16;
+        } else if (fourCC === 0x31545844) { // DXT1
+          format = "rgb";
+          blockSize = 8;
+        }
+
+        if (!format) return null;
+
+        const data = new Uint8Array(arrayBuffer, 128);
+        const levels = [];
+        let offset = 0;
+        for (let m = 0; m < mipCount; m++) {
+          const mw = Math.max(1, width >> m);
+          const mh = Math.max(1, height >> m);
+          const blocksX = Math.max(1, Math.ceil(mw / 4));
+          const blocksY = Math.max(1, Math.ceil(mh / 4));
+          const levelSize = blocksX * blocksY * blockSize;
+          levels.push({ width: mw, height: mh, data: data.slice(offset, offset + levelSize) });
+          offset += levelSize;
+        }
+
+        return { width, height, format, levels };
+      }
+
+      function loadTerrainTextures(texNames) {
+        const s3tcExt = gl.getExtension("WEBGL_compressed_texture_s3tc");
+        if (!s3tcExt) {
+          console.warn("[terrain] S3TC extension not available, using vertex colors only");
+          return Promise.resolve();
+        }
+
+        const DXT5_RGBA = s3tcExt.COMPRESSED_RGBA_S3TC_DXT5_EXT;
+        const DXT1_RGB = s3tcExt.COMPRESSED_RGB_S3TC_DXT1_EXT;
+
+        const promises = texNames.map((name, idx) => {
+          return fetch(`/api/terrain-texture/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` } })
+            .then(r => r.arrayBuffer())
+            .then(buf => {
+              const dds = parseDDS(buf);
+              if (!dds) return;
+              const tex = gl.createTexture();
+              gl.bindTexture(gl.TEXTURE_2D, tex);
+              const internalFormat = dds.format === "rgba" ? DXT5_RGBA : DXT1_RGB;
+              for (let m = 0; m < dds.levels.length; m++) {
+                const lvl = dds.levels[m];
+                gl.compressedTexImage2D(gl.TEXTURE_2D, m, internalFormat, lvl.width, lvl.height, 0, lvl.data);
+              }
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+              gl.generateMipmap(gl.TEXTURE_2D);
+              terrain.texCache[name] = tex;
+            })
+            .catch(() => {});
+        });
+
+        return Promise.all(promises).then(() => {
+          console.log(`[terrain] Loaded ${Object.keys(terrain.texCache).length} textures`);
+        });
+      }
+
+      function renderTerrain() {
+        if (!terrain.loaded) return;
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(terrain.program);
+        gl.bindVertexArray(terrain.vao);
+        gl.uniform3f(terrain.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(terrain.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(terrain.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(terrain.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform1i(terrain.uniforms.tex, 0);
+        gl.activeTexture(gl.TEXTURE0);
+
+        // Frustum-cull chunks: skip anything behind the camera or outside the
+        // view cone (typically draws ~200 of 1024 chunks).
+        const cyv = Math.cos(camera.yaw), syv = Math.sin(camera.yaw);
+        const cpv = Math.cos(camera.pitch), spv = Math.sin(camera.pitch);
+        const halfW = window.innerWidth / (2 * camera.fov);
+        const halfH = window.innerHeight / (2 * camera.fov);
+        const R = 320; // chunk bounding-sphere radius (256m footprint + height range)
+
+        for (let i = 0; i < terrain.chunks.length; i++) {
+          const chunk = terrain.chunks[i];
+          if (chunk.indexCount === 0) continue;
+          const dx = chunk.center[0] - camera.x, dy = chunk.center[1] - camera.y, dz = chunk.center[2] - camera.z;
+          const camXv = cyv * dx - syv * dz;
+          const z1v = syv * dx + cyv * dz;
+          const camYv = cpv * dy - spv * z1v;
+          const camZv = spv * dy + cpv * z1v;
+          if (camZv < -R) continue;
+          const zc = Math.max(camZv, 0);
+          if (Math.abs(camXv) > halfW * zc + R) continue;
+          if (Math.abs(camYv) > halfH * zc + R) continue;
+
+          const tex = terrain.texCache[chunk.texName];
+          if (tex) {
+            gl.uniform1i(terrain.uniforms.hasTex, 1);
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+          } else {
+            gl.uniform1i(terrain.uniforms.hasTex, 0);
+          }
+
+          gl.drawElements(gl.TRIANGLES, chunk.indexCount, gl.UNSIGNED_INT, chunk.indexStart * 4);
+        }
+
+        gl.bindVertexArray(null);
+        gl.enable(gl.CULL_FACE);
+      }
+
+      function linkProgram(gl, vertexSource, fragmentSource) {
+        const program = gl.createProgram();
+        gl.attachShader(program, compileShader(gl, gl.VERTEX_SHADER, vertexSource));
+        gl.attachShader(program, compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource));
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+        return program;
+      }
+
+      function cubeVertices() {
+        return [
+          -0.5,-0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5, 0.5, -0.5,-0.5, 0.5, 0.5, 0.5, 0.5, -0.5, 0.5, 0.5,
+           0.5,-0.5,-0.5,-0.5,-0.5,-0.5,-0.5, 0.5,-0.5, 0.5,-0.5,-0.5,-0.5, 0.5,-0.5, 0.5, 0.5,-0.5,
+          -0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,-0.5, -0.5, 0.5, 0.5, 0.5, 0.5,-0.5, -0.5, 0.5,-0.5,
+          -0.5,-0.5,-0.5, 0.5,-0.5,-0.5, 0.5,-0.5, 0.5, -0.5,-0.5,-0.5, 0.5,-0.5, 0.5, -0.5,-0.5, 0.5,
+           0.5,-0.5, 0.5, 0.5,-0.5,-0.5, 0.5, 0.5,-0.5, 0.5,-0.5, 0.5, 0.5, 0.5,-0.5, 0.5, 0.5, 0.5,
+          -0.5,-0.5,-0.5,-0.5,-0.5, 0.5,-0.5, 0.5, 0.5, -0.5,-0.5,-0.5,-0.5, 0.5, 0.5,-0.5, 0.5,-0.5
+        ];
+      }
+
+      function resize() {
+        const w = window.innerWidth * devicePixelRatio;
+        const h = window.innerHeight * devicePixelRatio;
+        canvas.width = overlay.width = w;
+        canvas.height = overlay.height = h;
+        canvas.style.width = overlay.style.width = `${window.innerWidth}px`;
+        canvas.style.height = overlay.style.height = `${window.innerHeight}px`;
+        ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+      }
+
+      function isConstructionKind(kind) {
+        return kind === "foundation" || kind === "simple" || kind === "door" || kind === "lootable" || kind === "worldLootable" || kind === "worldSimple";
+      }
+
+      function computeFilteredObjects() {
+        const kind = kindFilter.value;
+        const q = search.value.trim().toLowerCase();
+        return Array.from(objects.values()).filter((obj) => {
+          if (!isEditable(obj) && obj.source !== "saved") return false;
+          if (kind && obj.kind !== kind) return false;
+          if (!q) return true;
+          return [obj.id, obj.kind, obj.name, obj.source, obj.modelId, obj.itemDefId].join(" ").toLowerCase().includes(q);
+        });
+      }
+
+      function spatialKey(x, z) { return `${Math.floor(x / spatialCellSize)},${Math.floor(z / spatialCellSize)}`; }
+
+      function rebuildSpatialIndex() {
+        spatialIndex = new Map();
+        for (const obj of filteredCache) {
+          const key = spatialKey(obj.pos[0], obj.pos[2]);
+          let bucket = spatialIndex.get(key);
+          if (!bucket) { bucket = []; spatialIndex.set(key, bucket); }
+          bucket.push(obj);
+        }
+      }
+
+      function nearbyObjects(renderDistance) {
+        const minX = Math.floor((camera.x - renderDistance) / spatialCellSize);
+        const maxX = Math.floor((camera.x + renderDistance) / spatialCellSize);
+        const minZ = Math.floor((camera.z - renderDistance) / spatialCellSize);
+        const maxZ = Math.floor((camera.z + renderDistance) / spatialCellSize);
+        const renderDistanceSq = renderDistance * renderDistance;
+        const result = [];
+        for (let x = minX; x <= maxX; x++) {
+          for (let z = minZ; z <= maxZ; z++) {
+            const bucket = spatialIndex.get(`${x},${z}`);
+            if (!bucket) continue;
+            for (const obj of bucket) {
+              if (isSelected(obj.id)) continue;
+              const dx = obj.pos[0] - camera.x;
+              const dz = obj.pos[2] - camera.z;
+              const distSq = dx * dx + dz * dz;
+              if (distSq <= renderDistanceSq) result.push({ obj, distSq });
+            }
+          }
+        }
+        result.sort((a, b) => a.distSq - b.distSq);
+        return result;
+      }
+
+      function hexToRgb(hex) {
+        const h = (hex || "#ffffff").replace("#", "");
+        return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255];
+      }
+
+      function rgbaCss(hex, alpha) {
+        const [r, g, b] = hexToRgb(hex);
+        return `rgba(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)},${alpha})`;
+      }
+
+      function cameraSpace(point) {
+        const dx = point[0] - camera.x, dy = point[1] - camera.y, dz = point[2] - camera.z;
+        const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw), cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+        const x1 = cy * dx - sy * dz;
+        const z1 = sy * dx + cy * dz;
+        const y2 = cp * dy - sp * z1;
+        const z2 = sp * dy + cp * z1;
+        return [x1, y2, z2];
+      }
+
+      function project(point) {
+        const c = cameraSpace(point);
+        if (c[2] <= 4) return null;
+        const s = camera.fov / c[2];
+        return { x: window.innerWidth / 2 - c[0] * s, y: window.innerHeight / 2 - c[1] * s, z: c[2], scale: s };
+      }
+
+      function cubeDims(obj) {
+        const s = obj.scale || [1, 1, 1];
+        let base = [10, 10, 10];
+        if (obj.kind === "itemSpawner" || obj.kind === "spawnedItem") base = [4, 4, 4];
+        else if (obj.kind === "npc" || obj.kind === "npcSpawner") base = [7, 18, 7];
+        else if (obj.kind === "vehicle" || obj.kind === "vehicleSpawner") base = [20, 9, 36];
+        else if (obj.kind === "speedTree") base = [8, 28, 8];
+        else if (obj.kind === "foundation") base = [28, 6, 28];
+        else if (obj.kind === "door" || obj.kind === "worldDoor") base = [12, 22, 3];
+        return [base[0] * Math.max(0.2, s[0] || 1), base[1] * Math.max(0.2, s[1] || 1), base[2] * Math.max(0.2, s[2] || 1)];
+      }
+
+      function isEditable(obj) { return obj && obj.editable !== false && obj.source !== "zoneData"; }
+
+      function drawLine(a, b, color, width = 1) {
+        const pa = project(a), pb = project(b);
+        if (!pa || !pb) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        ctx.stroke();
+      }
+
+      function drawGrid() {
+        for (let v = -4096; v <= 4096; v += 512) {
+          const major = v % 1024 === 0;
+          drawLine([-4096, 0, v], [4096, 0, v], major ? "rgba(90,120,160,0.36)" : "rgba(90,120,160,0.18)", major ? 1.3 : 1);
+          drawLine([v, 0, -4096], [v, 0, 4096], major ? "rgba(90,120,160,0.36)" : "rgba(90,120,160,0.18)", major ? 1.3 : 1);
+        }
+      }
+
+      function drawPlayers() {
+        for (const player of players) {
+          const p = player.pos || [0, 0, 0];
+          drawLine([p[0], p[1], p[2]], [p[0], p[1] + 30, p[2]], "#4dffeb", 3);
+          const label = project([p[0], p[1] + 36, p[2]]);
+          if (label) {
+            ctx.fillStyle = "#4dffeb";
+            ctx.font = "12px Arial";
+            ctx.fillText(player.name || "Player", label.x + 5, label.y);
+          }
+        }
+      }
+
+      function drawGizmo() {
+        gizmoHandles = [];
+        const objs = selectedEditableObjects();
+        if (!objs.length) return;
+        const origin = gizmoCenter(objs);
+        // Size the gizmo from the group's spread so it's grabbable for 1 or many.
+        let spread = 0;
+        for (const o of objs) {
+          spread = Math.max(spread, Math.hypot(o.pos[0] - origin[0], o.pos[2] - origin[2]));
+          const dm = cubeDims(o); spread = Math.max(spread, Math.max(dm[0], dm[2]) * 0.5);
+        }
+        const length = Math.max(40, Math.min(220, spread * 1.1 + 45));
+        const axes = [
+          { axis: "x", color: "#ff4b4b", vector: [1, 0, 0] },
+          { axis: "y", color: "#4dff72", vector: [0, 1, 0] },
+          { axis: "z", color: "#4d8dff", vector: [0, 0, 1] }
+        ];
+        const originScreen = project(origin);
+        if (!originScreen) return;
+        ctx.lineWidth = 4;
+        for (const info of axes) {
+          const end = [origin[0] + info.vector[0] * length, origin[1] + info.vector[1] * length, origin[2] + info.vector[2] * length];
+          const endScreen = project(end);
+          if (!endScreen) continue;
+          ctx.strokeStyle = info.color;
+          ctx.fillStyle = info.color;
+          ctx.beginPath();
+          ctx.moveTo(originScreen.x, originScreen.y);
+          ctx.lineTo(endScreen.x, endScreen.y);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(endScreen.x, endScreen.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#07101c";
+          ctx.font = "bold 11px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(info.axis.toUpperCase(), endScreen.x, endScreen.y + 0.5);
+          gizmoHandles.push({ ...info, origin, length, originScreen, endScreen });
+        }
+
+        // Yaw rotation ring with a draggable knob at the primary object's facing.
+        const ringRadius = Math.max(spread + 14, 26);
+        ctx.strokeStyle = "rgba(255, 210, 77, 0.85)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i <= 48; i++) {
+          const a = (i / 48) * Math.PI * 2;
+          const pt = project([origin[0] - Math.sin(a) * ringRadius, origin[1], origin[2] + Math.cos(a) * ringRadius]);
+          if (!pt) { started = false; continue; }
+          if (!started) { ctx.moveTo(pt.x, pt.y); started = true; }
+          else ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.stroke();
+        const eulerNow = Number(objects.get(selectedId)?.euler) || 0;
+        const knobScreen = project([origin[0] - Math.sin(eulerNow) * ringRadius, origin[1], origin[2] + Math.cos(eulerNow) * ringRadius]);
+        if (knobScreen) {
+          ctx.fillStyle = "#ffd24d";
+          ctx.beginPath();
+          ctx.arc(knobScreen.x, knobScreen.y, 8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = "#07101c";
+          ctx.font = "bold 11px Arial";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("R", knobScreen.x, knobScreen.y + 0.5);
+          gizmoHandles.push({ axis: "yaw", color: "#ffd24d", vector: [0, 1, 0], origin, length: ringRadius, originScreen, endScreen: knobScreen });
+        }
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+      }
+
+      function drawHud() {
+        ctx.fillStyle = "rgba(0,0,0,0.42)";
+        ctx.fillRect(14, window.innerHeight - 96, 390, 78);
+        ctx.fillStyle = "#d9e9ff";
+        ctx.font = "13px Arial";
+        ctx.fillText(`FPS ${fps.toFixed(0)}  GPU Cubes ${renderedCount.textContent}`, 26, window.innerHeight - 71);
+        ctx.fillText(`Camera X ${camera.x.toFixed(1)}  Y ${camera.y.toFixed(1)}  Z ${camera.z.toFixed(1)}`, 26, window.innerHeight - 51);
+        ctx.fillText(`Yaw ${(camera.yaw * 180 / Math.PI).toFixed(1)}  Pitch ${(camera.pitch * 180 / Math.PI).toFixed(1)}  Speed ${speedInput.value}`, 26, window.innerHeight - 29);
+      }
+
+      function buildRenderEntries() {
+        projectedObjects = [];
+        const entries = [];
+        const included = new Set();
+        const renderDistance = Math.max(100, Number(renderDistanceInput.value) || 2500);
+        const maxRendered = Math.max(100, Number(maxRenderedInput.value) || 10000);
+        for (const id of selectedIds) {
+          const so = objects.get(id);
+          if (so && addRenderEntry(so, 0, entries)) included.add(id);
+        }
+
+        for (const candidate of nearbyObjects(renderDistance)) {
+          if (entries.length >= maxRendered) break;
+          if (included.has(candidate.obj.id)) continue;
+          addRenderEntry(candidate.obj, candidate.distSq, entries);
+        }
+
+        addWorldObjectEntries(entries, maxRendered);
+        for (const player of players) addPlayerRenderEntry(player, entries);
+        return entries;
+      }
+
+      function addRenderEntry(obj, distSq, entries) {
+        const [w, h, d] = cubeDims(obj);
+        const center = [obj.pos[0], obj.pos[1] + h / 2, obj.pos[2]];
+        const screen = project(center);
+        if (!screen) return false;
+        if (screen.x < -100 || screen.x > window.innerWidth + 100 || screen.y < -100 || screen.y > window.innerHeight + 100) return false;
+        const selectedHere = isSelected(obj.id);
+        // Primary selection is bright white; other selected objects are cyan.
+        const color = selectedHere
+          ? (obj.id === selectedId ? [1, 1, 1, 1] : [0.45, 0.85, 1, 1])
+          : [...hexToRgb(COLORS[obj.kind] || "#ffffff"), 1];
+        if (obj.source === "zoneData" && !selectedHere) {
+          color[0] *= 0.72; color[1] *= 0.72; color[2] *= 0.72;
+        }
+        projectedObjects.push({ obj, screen, distSq });
+        // Constructions with a real model are drawn by renderWorldModels();
+        // they stay pickable, and selected ones keep their cube marker.
+        if (!selectedHere && constructionEntryFor(obj)) return true;
+        entries.push({ obj, center, scale: [w, h, d], color, yaw: Number(obj.euler) || 0, distSq });
+        return true;
+      }
+
+      function addPlayerRenderEntry(player, entries) {
+        const p = player.pos || [0, 0, 0];
+        const screen = project([p[0], p[1] + 15, p[2]]);
+        if (!screen) return;
+        entries.push({
+          obj: null,
+          center: [p[0], p[1] + 15, p[2]],
+          scale: [7, 30, 7],
+          color: [0.2, 1, 0.92, 1],
+          yaw: 0,
+          distSq: 0,
+        });
+      }
+
+      function renderGpu(entries) {
+        gl.clearColor(0.03, 0.05, 0.08, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        renderTerrain();
+        renderWorldModels();
+        renderTrees();
+        if (!entries.length) return;
+        const data = new Float32Array(entries.length * 11);
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i], o = i * 11;
+          data[o] = e.center[0]; data[o + 1] = e.center[1]; data[o + 2] = e.center[2];
+          data[o + 3] = e.scale[0]; data[o + 4] = e.scale[1]; data[o + 5] = e.scale[2];
+          data[o + 6] = e.color[0]; data[o + 7] = e.color[1]; data[o + 8] = e.color[2]; data[o + 9] = e.color[3];
+          data[o + 10] = e.yaw;
+        }
+        gl.useProgram(gpu.program);
+        gl.bindVertexArray(gpu.vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gpu.instanceBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        gl.uniform3f(gpu.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(gpu.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(gpu.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(gpu.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform2f(gpu.uniforms.nearFar, 2, 20000);
+        gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, entries.length);
+        gl.bindVertexArray(null);
+      }
+
+      function draw() {
+        const entries = buildRenderEntries();
+        renderGpu(entries);
+        ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        drawGrid();
+        drawGizmo();
+        drawPlayers();
+        drawHud();
+        renderedCount.textContent = entries.length;
+      }
+
+      function updateCamera(dt) {
+        if (!rightLook) return;
+        const speed = Math.max(1, Number(speedInput.value) || 180);
+        const step = speed * dt;
+        const forward = [Math.sin(camera.yaw), 0, Math.cos(camera.yaw)];
+        const right = [Math.cos(camera.yaw), 0, -Math.sin(camera.yaw)];
+        if (keys.has("w")) { camera.x += forward[0] * step; camera.z += forward[2] * step; }
+        if (keys.has("s")) { camera.x -= forward[0] * step; camera.z -= forward[2] * step; }
+        if (keys.has("d")) { camera.x -= right[0] * step; camera.z -= right[2] * step; }
+        if (keys.has("a")) { camera.x += right[0] * step; camera.z += right[2] * step; }
+        if (keys.has("q")) camera.y -= step;
+        if (keys.has("e")) camera.y += step;
+      }
+
+      function loop(now) {
+        const dt = Math.min(0.05, (now - lastTime) / 1000);
+        lastTime = now;
+        fpsFrames++;
+        if (now - fpsLastTime >= 500) {
+          fps = (fpsFrames * 1000) / (now - fpsLastTime);
+          fpsFrames = 0;
+          fpsLastTime = now;
+        }
+        updateCamera(dt);
+        draw();
+        requestAnimationFrame(loop);
+      }
+
+      function setSelected(id, additive = false) {
+        const key = id ? String(id) : "";
+        if (additive && key) {
+          if (selectedIds.has(key)) {
+            selectedIds.delete(key);
+            if (selectedId === key) selectedId = selectedIds.size ? [...selectedIds][selectedIds.size - 1] : "";
+          } else {
+            selectedIds.add(key);
+            selectedId = key;
+          }
+        } else {
+          selectedIds.clear();
+          selectedId = key;
+          if (key) selectedIds.add(key);
+        }
+        objectsRev++; // selected constructions render as cubes, not models
+        refreshSelectionPanel();
+        renderList(false);
+      }
+
+      function refreshSelectionPanel() {
+        for (const id of [...selectedIds]) if (!objects.has(id)) selectedIds.delete(id);
+        if (selectedId && !objects.has(selectedId)) selectedId = selectedIds.size ? [...selectedIds][0] : "";
+        const count = selectedIds.size;
+        const obj = objects.get(selectedId);
+        selection.hidden = count === 0;
+        emptySelection.hidden = count !== 0;
+        if (count === 0) return;
+
+        selectionSummary.textContent = count === 1 ? "1 object selected" : `${count} objects selected`;
+        if (count > 1) {
+          selectionListEl.style.display = "block";
+          selectionListEl.innerHTML = [...selectedIds].map((id) => {
+            const o = objects.get(id);
+            if (!o) return "";
+            const label = `${o.name || o.kind} (${o.itemDefId || o.modelId || "?"})`;
+            const style = id === selectedId ? ' style="color:#fff;font-weight:700"' : "";
+            return `<div class="object-row" data-sel-id="${id}"${style}>${label} <span class="muted">${o.kind}</span></div>`;
+          }).join("");
+        } else {
+          selectionListEl.style.display = "none";
+          selectionListEl.innerHTML = "";
+        }
+
+        if (obj) {
+          const editable = isEditable(obj);
+          const single = count === 1;
+          fields.kind.textContent = obj.kind;
+          fields.source.textContent = editable ? "live editable" : obj.source === "saved" ? "saved read-only" : "static database";
+          fields.name.value = single ? (obj.name || "") : `${count} objects`;
+          fields.id.value = single ? obj.id : `${count} selected`;
+          fields.x.value = Number(obj.pos[0]).toFixed(3);
+          fields.y.value = Number(obj.pos[1]).toFixed(3);
+          fields.z.value = Number(obj.pos[2]).toFixed(3);
+          fields.yaw.value = ((Number(obj.euler) || 0) * 180 / Math.PI).toFixed(2);
+          fields.scale.value = Number(obj.scale?.[0] || 1).toFixed(3);
+          // Numeric fields + Apply only make sense for one object; drag the gizmo
+          // for group moves.
+          for (const input of [fields.x, fields.y, fields.z, fields.yaw, fields.scale]) input.disabled = !editable || !single;
+          applyButton.disabled = !editable || !single;
+          readonlyNote.hidden = editable;
+        }
+      }
+
+      // Objects (editable) that are currently selected, and the group gizmo center.
+      function selectedEditableObjects() {
+        const out = [];
+        for (const id of selectedIds) { const o = objects.get(id); if (isEditable(o)) out.push(o); }
+        return out;
+      }
+      function gizmoCenter(objs) {
+        let cx = 0, cy = 0, cz = 0;
+        for (const o of objs) { const dims = cubeDims(o); cx += o.pos[0]; cy += o.pos[1] + dims[1] / 2; cz += o.pos[2]; }
+        const n = objs.length || 1;
+        return [cx / n, cy / n, cz / n];
+      }
+
+      function renderList(recompute = true) {
+        if (recompute) {
+          filteredCache = computeFilteredObjects();
+          rebuildSpatialIndex();
+        }
+        objectCount.textContent = `${filteredCache.length}/${objects.size}`;
+        playerCount.textContent = players.length;
+        const kinds = Array.from(new Set(filteredCache.map((o) => o.kind))).sort();
+        const currentKind = kindFilter.value;
+        kindFilter.innerHTML = '<option value="">All object kinds</option>' + kinds.map((kind) => `<option value="${kind}">${kind}</option>`).join("");
+        kindFilter.value = kinds.includes(currentKind) ? currentKind : "";
+        const rows = filteredCache.slice(0, 300).map((obj) => {
+          const label = `${obj.name || obj.kind} (${obj.itemDefId || obj.modelId || "?"})`;
+          return `<button class="object-row ${isSelected(obj.id) ? "active" : ""}" data-id="${obj.id}">${label}<br><span class="muted">${obj.kind} ${obj.source || "live"} ${obj.id}</span></button>`;
+        });
+        objectList.innerHTML = rows.join("") || '<div class="muted" style="padding:10px">No objects match.</div>';
+      }
+
+      function mergeObjects(next) {
+        for (const obj of next || []) {
+          const id = String(obj.id);
+          const prev = objects.get(id);
+          if (prev && pendingMoves.has(id)) {
+            // Keep local unsent edits; the server copy is stale by design.
+            obj.pos = prev.pos;
+            obj.euler = prev.euler;
+            obj.scale = prev.scale;
+          }
+          objects.set(id, obj);
+        }
+        objectsRev++;
+        refreshSelectionPanel();
+        renderList();
+      }
+
+      function removeObjects(ids) {
+        for (const id of ids || []) objects.delete(String(id));
+        objectsRev++;
+        refreshSelectionPanel();
+        renderList();
+      }
+
+      function sendTransform(obj, final = true) {
+        if (!ws || ws.readyState !== WebSocket.OPEN || obj.source === "zoneData") return;
+        ws.send(JSON.stringify({ type: "transform", id: obj.id, pos: obj.pos, euler: obj.euler, scale: obj.scale, final }));
+      }
+
+      // Gizmo drags stay local; the pending bar asks before sending to the
+      // server (one final transform per object — no live respawn spam).
+      const pendingMoves = new Map(); // id -> original { pos, euler }
+      function updatePendingBar() {
+        pendingBar.hidden = pendingMoves.size === 0;
+        pendingText.textContent = `${pendingMoves.size} unsaved move${pendingMoves.size === 1 ? "" : "s"} (local only)`;
+      }
+      function recordPendingMove(obj, origPos, origEuler) {
+        if (!pendingMoves.has(obj.id)) pendingMoves.set(obj.id, { pos: origPos, euler: origEuler });
+        updatePendingBar();
+      }
+
+      // Inverse of project(): world-space ray direction for a screen point
+      // (accounts for the mirrored screen X).
+      function screenRayDir(mx, my) {
+        const a = (window.innerWidth / 2 - mx) / camera.fov;
+        const b = (window.innerHeight / 2 - my) / camera.fov;
+        const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw), cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+        const z1 = cp - sp * b;
+        return [cy * a + sy * z1, cp * b + sp, -sy * a + cy * z1];
+      }
+
+      function mouseToPlane(mx, my, planeY) {
+        const dir = screenRayDir(mx, my);
+        if (Math.abs(dir[1]) < 1e-6) return null;
+        const t = (planeY - camera.y) / dir[1];
+        if (!Number.isFinite(t) || t <= 0) return null;
+        return [camera.x + dir[0] * t, planeY, camera.z + dir[2] * t];
+      }
+
+      function updateSelectionFields(obj) {
+        fields.x.value = Number(obj.pos[0]).toFixed(3);
+        fields.y.value = Number(obj.pos[1]).toFixed(3);
+        fields.z.value = Number(obj.pos[2]).toFixed(3);
+      }
+
+      async function fetchSnapshot() {
+        try {
+          const response = await fetch("/api/snapshot", { headers: { Authorization: `Bearer ${token}` } });
+          if (!response.ok) return;
+          const msg = await response.json();
+          objects = new Map();
+          mergeObjects(msg.objects || []);
+          players = msg.players || players;
+          playerCount.textContent = players.length;
+        } catch (_) {}
+      }
+
+      function connect() {
+        const scheme = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${scheme}://${location.host}`);
+        ws.addEventListener("open", () => {
+          statusEl.textContent = "authenticating...";
+          ws.send(JSON.stringify({ type: "auth", token }));
+        });
+        ws.addEventListener("message", (event) => {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "auth_ok") { statusEl.textContent = "connected"; fetchSnapshot(); }
+          if (msg.type === "snapshot") { objects = new Map(); mergeObjects(msg.objects); }
+          if (msg.type === "update") mergeObjects(msg.objects);
+          if (msg.type === "removed") removeObjects(msg.ids);
+          if (msg.type === "players") { players = msg.players || []; playerCount.textContent = players.length; }
+          if (msg.type === "error") statusEl.textContent = msg.message || "error";
+        });
+        ws.addEventListener("close", () => {
+          statusEl.textContent = "disconnected, retrying...";
+          setTimeout(connect, 1500);
+        });
+      }
+
+      // Ray-vs-oriented-box test in the object's local frame.
+      // `yaw` is the mesh instance rotation (models use -euler, cubes +euler).
+      function rayBoxHit(obj, bbox, yaw, dir) {
+        const s = Number(obj.scale?.[0]) || 1;
+        const c = Math.cos(-yaw), si = Math.sin(-yaw); // inverse rotation
+        const ox = camera.x - obj.pos[0], oy = camera.y - obj.pos[1], oz = camera.z - obj.pos[2];
+        const o = [(c * ox - si * oz) / s, oy / s, (si * ox + c * oz) / s];
+        const d = [(c * dir[0] - si * dir[2]) / s, dir[1] / s, (si * dir[0] + c * dir[2]) / s];
+        const pad = 0.12;
+        const mins = [bbox[0][0] - pad, bbox[0][1] - pad, bbox[0][2] - pad];
+        const maxs = [bbox[1][0] + pad, bbox[1][1] + pad, bbox[1][2] + pad];
+        let tmin = 0.5, tmax = 4000;
+        for (let i = 0; i < 3; i++) {
+          if (Math.abs(d[i]) < 1e-9) {
+            if (o[i] < mins[i] || o[i] > maxs[i]) return null;
+            continue;
+          }
+          let t1 = (mins[i] - o[i]) / d[i], t2 = (maxs[i] - o[i]) / d[i];
+          if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
+          if (t1 > tmin) tmin = t1;
+          if (t2 < tmax) tmax = t2;
+          if (tmin > tmax) return null;
+        }
+        return tmin;
+      }
+
+      // Click directly on a construction model to select it.
+      function pickByRay(mx, my) {
+        if (!wm.loaded) return null;
+        const dir = screenRayDir(mx, my);
+        const renderDistance = Math.max(100, Number(renderDistanceInput.value) || 2500) + 64;
+        const maxDistSq = renderDistance * renderDistance;
+        let best = null, bestT = Infinity;
+        for (const obj of objects.values()) {
+          const entry = constructionEntryFor(obj);
+          if (!entry || !entry.bbox) continue;
+          const dx = obj.pos[0] - camera.x, dz = obj.pos[2] - camera.z;
+          if (dx * dx + dz * dz > maxDistSq) continue;
+          const t = rayBoxHit(obj, entry.bbox, -(Number(obj.euler) || 0), dir);
+          if (t !== null && t < bestT) { bestT = t; best = obj; }
+        }
+        return best;
+      }
+
+      function pick(clientX, clientY) {
+        const rayHit = pickByRay(clientX, clientY);
+        if (rayHit) return rayHit;
+        let best = null;
+        let bestDist = 28;
+        for (const entry of projectedObjects) {
+          const dist = Math.hypot(entry.screen.x - clientX, entry.screen.y - clientY);
+          if (dist < bestDist) { best = entry.obj; bestDist = dist; }
+        }
+        return best;
+      }
+
+      function pickGizmo(clientX, clientY) {
+        let best = null;
+        let bestDist = 16;
+        for (const handle of gizmoHandles) {
+          const dist = Math.hypot(handle.endScreen.x - clientX, handle.endScreen.y - clientY);
+          if (dist < bestDist) { best = handle; bestDist = dist; }
+        }
+        return best;
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (event.button === 0) {
+          const handle = pickGizmo(event.clientX, event.clientY);
+          const groupObjs = selectedEditableObjects();
+          if (handle && groupObjs.length) {
+            const sx = handle.endScreen.x - handle.originScreen.x;
+            const sy = handle.endScreen.y - handle.originScreen.y;
+            const screenLength = Math.max(1, Math.hypot(sx, sy));
+            const group = groupObjs.map((o) => ({ obj: o, startPos: o.pos.slice(), startEuler: Number(o.euler) || 0 }));
+            let startAngle = 0;
+            if (handle.axis === "yaw") {
+              const w0 = mouseToPlane(event.clientX, event.clientY, handle.origin[1]);
+              if (w0) startAngle = Math.atan2(-(w0[0] - handle.origin[0]), w0[2] - handle.origin[2]);
+            }
+            activeGizmo = { handle, startMouse: [event.clientX, event.clientY], screenUnit: [sx / screenLength, sy / screenLength], screenLength, group, startAngle };
+            canvas.setPointerCapture(event.pointerId);
+            return;
+          }
+        }
+        if (event.button === 2) {
+          // FPS look (Unity-style): lock the pointer so the cursor is hidden and
+          // stays inside the app; camera rotates from raw movement deltas. The
+          // cursor reappears where it was on release. Don't use setPointerCapture
+          // here — pointer lock already captures the mouse and the two conflict.
+          rightLook = true;
+          if (document.pointerLockElement !== canvas) {
+            try { canvas.requestPointerLock(); } catch (_) {}
+          }
+          return;
+        }
+        dragStart = { x: event.clientX, y: event.clientY };
+        canvas.setPointerCapture(event.pointerId);
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (activeGizmo) {
+          if (!activeGizmo.group.length) return;
+          if (activeGizmo.handle.axis === "yaw") {
+            // Rotate the whole group around the gizmo center, and turn each object.
+            const center = activeGizmo.handle.origin;
+            const world = mouseToPlane(event.clientX, event.clientY, center[1]);
+            if (world) {
+              const angle = Math.atan2(-(world[0] - center[0]), world[2] - center[2]);
+              const dA = angle - activeGizmo.startAngle;
+              const c = Math.cos(dA), s = Math.sin(dA);
+              for (const g of activeGizmo.group) {
+                const ox = g.startPos[0] - center[0], oz = g.startPos[2] - center[2];
+                g.obj.pos = [center[0] + ox * c - oz * s, g.startPos[1], center[2] + ox * s + oz * c];
+                g.obj.euler = g.startEuler + dA;
+              }
+            }
+          } else {
+            // Translate every selected object by the same world delta.
+            const dx = event.clientX - activeGizmo.startMouse[0];
+            const dy = event.clientY - activeGizmo.startMouse[1];
+            const screenDelta = dx * activeGizmo.screenUnit[0] + dy * activeGizmo.screenUnit[1];
+            const worldDelta = (screenDelta / activeGizmo.screenLength) * activeGizmo.handle.length;
+            const v = activeGizmo.handle.vector;
+            for (const g of activeGizmo.group) {
+              g.obj.pos = [g.startPos[0] + v[0] * worldDelta, g.startPos[1] + v[1] * worldDelta, g.startPos[2] + v[2] * worldDelta];
+            }
+          }
+          const primary = objects.get(selectedId);
+          if (primary) {
+            updateSelectionFields(primary);
+            fields.yaw.value = ((Number(primary.euler) || 0) * 180 / Math.PI).toFixed(2);
+          }
+          return;
+        }
+        if (!rightLook) return;
+        // Use raw movement deltas so look works under pointer lock (clientX is
+        // frozen while locked) and the cursor can never drift off-screen.
+        const dx = event.movementX || 0;
+        const dy = event.movementY || 0;
+        camera.yaw -= dx * 0.004;
+        camera.pitch = Math.max(-1.45, Math.min(1.45, camera.pitch - dy * 0.004));
+      });
+
+      canvas.addEventListener("pointerup", (event) => {
+        if (activeGizmo) {
+          for (const g of activeGizmo.group) recordPendingMove(g.obj, g.startPos, g.startEuler);
+          activeGizmo = null;
+          return;
+        }
+        if (event.button === 2) {
+          // Release FPS look and give the cursor back where it was.
+          rightLook = false;
+          if (document.pointerLockElement === canvas) document.exitPointerLock();
+          return;
+        }
+        const moved = dragStart ? Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) : 999;
+        dragStart = null;
+        if (event.button === 0 && moved < 5) {
+          const hit = pick(event.clientX, event.clientY);
+          if (hit) setSelected(hit.id, event.shiftKey);
+          else if (!event.shiftKey) setSelected(""); // click empty space clears
+        }
+      });
+
+      canvas.addEventListener("pointercancel", () => { rightLook = false; dragStart = null; activeGizmo = null; if (document.pointerLockElement === canvas) document.exitPointerLock(); });
+      // Keep look state in sync with the browser: ESC or any lost lock ends look.
+      document.addEventListener("pointerlockchange", () => {
+        if (document.pointerLockElement !== canvas) rightLook = false;
+      });
+      document.addEventListener("pointerlockerror", () => { rightLook = false; });
+      // Safety net if a right-up is missed (e.g. lock never engaged).
+      window.addEventListener("pointerup", (event) => {
+        if (event.button === 2 && document.pointerLockElement !== canvas) rightLook = false;
+      });
+      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      canvas.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        if (event.shiftKey) {
+          // Shift + wheel adjusts fly speed (up = faster, down = slower).
+          const cur = Math.max(1, Number(speedInput.value) || 180);
+          const next = event.deltaY < 0 ? cur * 1.15 : cur / 1.15;
+          speedInput.value = String(Math.round(Math.max(1, Math.min(2000, next))));
+          return;
+        }
+        // Plain wheel zooms toward the crosshair (screen center) along the exact
+        // view direction, including pitch — so it moves where you're looking.
+        const speed = Math.max(1, Number(speedInput.value) || 180);
+        const amount = speed * (event.deltaY < 0 ? 0.7 : -0.7);
+        const cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
+        const sy = Math.sin(camera.yaw), cy = Math.cos(camera.yaw);
+        camera.x += cp * sy * amount;
+        camera.y += sp * amount;
+        camera.z += cp * cy * amount;
+      }, { passive: false });
+
+      window.addEventListener("keydown", (event) => keys.add(event.key.toLowerCase()));
+      window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
+      window.addEventListener("resize", resize);
+
+      document.getElementById("apply").addEventListener("click", () => {
+        const obj = objects.get(selectedId);
+        if (!isEditable(obj)) return;
+        obj.pos = [Number(fields.x.value) || 0, Number(fields.y.value) || 0, Number(fields.z.value) || 0];
+        obj.euler = (Number(fields.yaw.value) || 0) * Math.PI / 180;
+        const s = Math.max(0.01, Number(fields.scale.value) || 1);
+        obj.scale = [s, s, s];
+        sendTransform(obj);
+        pendingMoves.delete(obj.id);
+        updatePendingBar();
+      });
+      document.getElementById("pending-apply").addEventListener("click", () => {
+        for (const id of pendingMoves.keys()) {
+          const obj = objects.get(id);
+          if (obj) sendTransform(obj, true);
+        }
+        pendingMoves.clear();
+        updatePendingBar();
+      });
+      document.getElementById("pending-revert").addEventListener("click", () => {
+        for (const [id, orig] of pendingMoves) {
+          const obj = objects.get(id);
+          if (obj) {
+            obj.pos = orig.pos.slice();
+            obj.euler = orig.euler;
+          }
+        }
+        pendingMoves.clear();
+        objectsRev++;
+        refreshSelectionPanel();
+        updatePendingBar();
+      });
+      document.getElementById("copy-pos").addEventListener("click", () => {
+        const obj = objects.get(selectedId);
+        if (!obj) return;
+        camera.x = obj.pos[0]; camera.y = obj.pos[1] + 80; camera.z = obj.pos[2] - 160; camera.yaw = 0; camera.pitch = -0.25;
+      });
+      document.getElementById("to-selected").addEventListener("click", () => document.getElementById("copy-pos").click());
+      document.getElementById("home").addEventListener("click", () => { camera.x = 0; camera.y = 650; camera.z = -5200; camera.yaw = 0; camera.pitch = -0.08; });
+      document.getElementById("topdown").addEventListener("click", () => { camera.x = 0; camera.y = 5200; camera.z = -10; camera.yaw = 0; camera.pitch = -1.42; });
+      document.getElementById("logout").addEventListener("click", () => { localStorage.removeItem(TOKEN_KEY); location.reload(); });
+      objectList.addEventListener("click", (event) => {
+        const row = event.target.closest("[data-id]");
+        if (row) setSelected(row.dataset.id, event.shiftKey);
+      });
+      selectionListEl.addEventListener("click", (event) => {
+        const row = event.target.closest("[data-sel-id]");
+        if (row) setSelected(row.dataset.selId, event.shiftKey);
+      });
+      kindFilter.addEventListener("change", () => renderList());
+      search.addEventListener("input", () => renderList());
+      worldDistance.addEventListener("input", () => {
+        worldDistanceValue.textContent = `${worldDistance.value} m`;
+        world.dirty = true;
+        trees.dirty = true;
+      });
+      worldToggle.addEventListener("change", () => { world.dirty = true; });
+      treesToggle.addEventListener("change", () => { trees.dirty = true; });
+
+      resize();
+      loadTerrain();
+      loadWorldObjects();
+      loadWorldModels();
+      loadSpeedTrees();
+      connect();
+      requestAnimationFrame(loop);
+    })();
+  </script>
+</body>
+</html>
