@@ -1,0 +1,3 @@
+# Configuration for the h1emu-ui plugin.
+# Currently no configurable options; this file just satisfies the
+# plugin manager's default-config load step.

@@ -1,0 +1,7 @@
+{
+  "name": "h1emu-ui",
+  "version": "1.0.0",
+  "description": "Server plugin API for the H1emu client patch UI menu",
+  "main": "plugin.js",
+  "dependencies": {}
+}
