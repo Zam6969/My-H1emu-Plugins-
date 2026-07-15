@@ -1,15 +1,33 @@
-const { BasePlugin } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server");
-const enums = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server/out/servers/ZoneServer2016/models/enums");
-const { movePoint, getCubeBounds, getAppDataFolderPath } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server/out/utils/utils");
 const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const WebSocket = require("ws");
 const { WebSocketServer } = WebSocket;
-const { PluginManager } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server/out/servers/ZoneServer2016/managers/pluginmanager");
-const { WorldDataManager } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server/out/servers/ZoneServer2016/managers/worlddatamanager");
-const { DB_COLLECTIONS } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1z1-server/out/utils/enums");
+
+function resolveH1z1ServerRoot() {
+  const candidates = [
+    path.join(process.cwd(), "node_modules", "h1z1-server"),
+    path.join(__dirname, "..", "..", "node_modules", "h1z1-server"),
+    path.join(__dirname, "..", "node_modules", "h1z1-server"),
+  ];
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, "package.json"))) {
+      return candidate;
+    }
+  }
+
+  return "h1z1-server";
+}
+
+const h1z1ServerRoot = resolveH1z1ServerRoot();
+const { BasePlugin } = require(h1z1ServerRoot);
+const enums = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "models", "enums"));
+const { movePoint, getCubeBounds, getAppDataFolderPath } = require(path.join(h1z1ServerRoot, "out", "utils", "utils"));
+const { PluginManager } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "managers", "pluginmanager"));
+const { WorldDataManager } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "managers", "worlddatamanager"));
+const { DB_COLLECTIONS } = require(path.join(h1z1ServerRoot, "out", "utils", "enums"));
 
 const SERVER_MAP_COORD_SIZE = 1000;
 const SERVER_MAP_LEFT_Z = -4097;

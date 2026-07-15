@@ -11,7 +11,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { readZone } = require("C:/Users/zam/Documents/H1emu/H1EmuServerFiles/h1z1-server-QuickStart-master/node_modules/h1emu-zone2json/out/zone.js");
+const { readZone } = require("h1emu-zone2json/out/zone.js");
 
 const zonePath = process.argv[2];
 if (!zonePath || !fs.existsSync(zonePath)) {
