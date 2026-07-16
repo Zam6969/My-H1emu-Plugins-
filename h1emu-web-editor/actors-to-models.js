@@ -50,7 +50,10 @@ for (const fileName of ["construction.json", "worldconstruction.json"]) {
 console.log(`world actors: ${zobNames.length}, distinct construction model ids: ${constructionIds.size}`);
 
 // ---------- adr/dme parsing ----------
-function pickDme(actorName) {
+// preferBest: take the Base/LOD0 model (full detail — this is the only one that
+// still has building interiors; the distant LODs are hollow silhouette shells).
+// Otherwise take the cheapest LOD, which keeps props/rocks/fences light.
+function pickDme(actorName, preferBest = false) {
   const adrPath = path.join(assetsDir, actorName.endsWith(".adr") ? actorName : `${actorName}.adr`);
   if (!fs.existsSync(adrPath)) return null;
   const xml = fs.readFileSync(adrPath, "utf8");
@@ -64,7 +67,10 @@ function pickDme(actorName) {
   }
   lods.sort((a, b) => a.distance - b.distance);
   const base = /<Base\s[^>]*?fileName="([^"]+)"/.exec(xml)?.[1];
-  for (const c of [...lods.map((l) => l.fileName).reverse(), base].filter(Boolean)) {
+  const ordered = preferBest
+    ? [base, ...lods.map((l) => l.fileName)]              // highest detail first
+    : [...lods.map((l) => l.fileName).reverse(), base];   // cheapest first
+  for (const c of ordered.filter(Boolean)) {
     const p = path.join(assetsDir, c);
     if (fs.existsSync(p)) return p;
   }
@@ -83,12 +89,27 @@ function pickDiffuse(texNames) {
   const scored = texNames.map((n) => {
     const l = n.toLowerCase();
     if (!l.endsWith(".dds")) return [n, -10];
+    if (l.includes("/") || l.includes("\\")) return [n, -10]; // path-qualified refs aren't servable
     if (/_n\.dds$|_s\.dds$|_e\.dds$|_ns\.dds$|_spec/.test(l)) return [n, -5];
     if (UTILITY_TEX.test(l)) return [n, -3];
     if (/_c\.dds$|_d\.dds$|_ds\.dds$|_cs\.dds$/.test(l)) return [n, 10];
     return [n, 1];
   }).filter(([, s]) => s > 0).sort((a, b) => b[1] - a[1]);
   return scored.length ? scored[0][0] : null;
+}
+
+// Many actors' LOD meshes reference only placeholder textures (grey.dds,
+// detail_cube.dds) plus normal/spec maps — their real skin is declared in the
+// .adr's <TextureAliases> instead. Wrecked cars/vans are the obvious case.
+function adrTextureAliases(actorName) {
+  const p = path.join(assetsDir, actorName.endsWith(".adr") ? actorName : `${actorName}.adr`);
+  if (!fs.existsSync(p)) return [];
+  const xml = fs.readFileSync(p, "utf8");
+  const out = [];
+  let m;
+  const re = /<Alias\s[^>]*?textureName="([^"]+)"/g;
+  while ((m = re.exec(xml))) out.push(m[1]);
+  return out;
 }
 
 function parseDme(dmePath) {
@@ -193,7 +214,7 @@ function parseDme(dmePath) {
     vertBase += vertexCount;
   }
   if (!verts.length || !indices.length) return null;
-  return { verts, indices, texture: pickDiffuse(texNames) };
+  return { verts, indices, texNames };
 }
 
 // ---------- texture packing (cap mips at TEX_MAX_DIM) ----------
@@ -204,6 +225,8 @@ fs.mkdirSync(texOutDir, { recursive: true });
 
 function packTexture(name) {
   if (texIndexByName.has(name)) return texIndexByName.get(name);
+  // The texture endpoint serves flat filenames only.
+  if (name.includes("/") || name.includes("\\")) { texIndexByName.set(name, -1); return -1; }
   const src = path.join(assetsDir, name);
   if (!fs.existsSync(src)) { texIndexByName.set(name, -1); return -1; }
   try {
@@ -246,32 +269,40 @@ function packTexture(name) {
 
 // ---------- build entries ----------
 const entries = [];
-function buildEntry(adrName) {
-  const dmePath = adrName ? pickDme(adrName) : null;
+function buildEntry(adrName, preferBest = false) {
+  const dmePath = adrName ? pickDme(adrName, preferBest) : null;
   if (!dmePath) return { verts: [], indices: [], texIdx: -1 };
   let mesh = null;
   try { mesh = parseDme(dmePath); } catch (_) { mesh = null; }
   if (!mesh) return { verts: [], indices: [], texIdx: -1 };
-  return { verts: mesh.verts, indices: mesh.indices, texIdx: mesh.texture ? packTexture(mesh.texture) : -1 };
+  // Mesh material names first (what the model actually binds), then the actor's
+  // texture aliases as a fallback for models that only reference placeholders.
+  const texture = pickDiffuse([...mesh.texNames, ...adrTextureAliases(adrName)]);
+  return { verts: mesh.verts, indices: mesh.indices, texIdx: texture ? packTexture(texture) : -1 };
 }
 
-let okWorld = 0;
+// Buildings need their full-detail model or they render as hollow shells with
+// no interior. Props/rocks/fences stay on the cheap LOD to protect framerate.
+let okWorld = 0, bestWorld = 0;
 for (const meta of zobNames) {
-  const e = buildEntry(meta.n);
+  const preferBest = meta.c === "structure";
+  const e = buildEntry(meta.n, preferBest);
   if (e.verts.length) okWorld++;
+  if (preferBest) bestWorld++;
   entries.push(e);
 }
 const constructionModels = {};
 let okCon = 0, missCon = [];
 for (const id of [...constructionIds].sort((a, b) => a - b)) {
   const adr = modelFileById.get(id);
-  const e = buildEntry(adr || null);
+  // Only ~31 construction models and they're what you edit up close — full detail.
+  const e = buildEntry(adr || null, true);
   if (e.verts.length) okCon++;
   else missCon.push(`${id}:${adr || "?"}`);
   constructionModels[id] = entries.length;
   entries.push(e);
 }
-console.log(`world entries ok: ${okWorld}/${zobNames.length}`);
+console.log(`world entries ok: ${okWorld}/${zobNames.length} (${bestWorld} structures at full detail)`);
 console.log(`construction entries ok: ${okCon}/${constructionIds.size}${missCon.length ? ` missing: ${missCon.join(", ")}` : ""}`);
 console.log(`textures packed: ${textures.length}`);
 

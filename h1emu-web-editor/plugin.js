@@ -24,10 +24,13 @@ function resolveH1z1ServerRoot() {
 const h1z1ServerRoot = resolveH1z1ServerRoot();
 const { BasePlugin } = require(h1z1ServerRoot);
 const enums = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "models", "enums"));
-const { movePoint, getCubeBounds, getAppDataFolderPath } = require(path.join(h1z1ServerRoot, "out", "utils", "utils"));
+const { movePoint, getCubeBounds, getAppDataFolderPath, eul2quat } = require(path.join(h1z1ServerRoot, "out", "utils", "utils"));
+const { ConstructionParentEntity } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "entities", "constructionparententity"));
+const { ConstructionDoor } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "entities", "constructiondoor"));
 const { PluginManager } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "managers", "pluginmanager"));
 const { WorldDataManager } = require(path.join(h1z1ServerRoot, "out", "servers", "ZoneServer2016", "managers", "worlddatamanager"));
 const { DB_COLLECTIONS } = require(path.join(h1z1ServerRoot, "out", "utils", "enums"));
+const dme = require(path.join(__dirname, "lib-dme.js"));
 
 const SERVER_MAP_COORD_SIZE = 1000;
 const SERVER_MAP_LEFT_Z = -4097;
@@ -93,7 +96,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
     super();
     this.name = "h1emu-web-editor";
     this.server = null;
-    this.config = { port: 8380, bindAddress: "127.0.0.1", password: "change-me", updateRateHz: 10 };
+    this.config = { port: 8380, bindAddress: "127.0.0.1", password: "change-me", updateRateHz: 10, assetsDir: "E:/big boy stuff/FORMAT/Why2.0" };
     this.httpServer = null;
     this.wsServer = null;
     this.sessions = new Map();
@@ -112,6 +115,9 @@ class H1emuWebEditorPlugin extends BasePlugin {
     this.liveLoadAttempts = 0;
     this.saveWorldTimer = null;
     this._zoneServerCache = null;
+    this.editorObjects = [];               // registry of placed objects the server won't save
+    this.registryByCharacterId = new Map();
+    this.editorObjectsSpawned = false;
   }
 
   loadConfig(config) {
@@ -120,6 +126,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
       bindAddress: String(config.bindAddress || "127.0.0.1"),
       password: String(config.password || "change-me"),
       updateRateHz: Math.max(1, Math.min(60, Number(config.updateRateHz) || 10)),
+      assetsDir: String(config.assetsDir || "E:/big boy stuff/FORMAT/Why2.0"),
     };
   }
 
@@ -143,6 +150,9 @@ class H1emuWebEditorPlugin extends BasePlugin {
 
     await this.loadSavedConstructionsIfNeeded();
     this.startLiveLoadRetry();
+    this.modelsCatalog(); // also fills MODEL_NAME_BY_ID so props get readable names
+    this.editorObjects = this.loadRegistry();
+    this.respawnEditorObjects();
     this.startHttpServer();
     this.scanTimer = setInterval(() => this.broadcastObjectChanges(), SCAN_INTERVAL_MS);
     this.playerTimer = setInterval(() => this.broadcastPlayers(), PLAYER_INTERVAL_MS);
@@ -229,14 +239,14 @@ class H1emuWebEditorPlugin extends BasePlugin {
 
   ensureConstructionDictionaries() {
     const server = this.zoneServer();
-    server._constructionFoundations ||= {};
-    server._constructionSimple ||= {};
-    server._constructionDoors ||= {};
-    server._lootableConstruction ||= {};
-    server._worldLootableConstruction ||= {};
-    server._worldSimpleConstruction ||= {};
-    server._clients ||= {};
-    server._grid ||= [];
+    server._constructionFoundations = server._constructionFoundations || {};
+    server._constructionSimple = server._constructionSimple || {};
+    server._constructionDoors = server._constructionDoors || {};
+    server._lootableConstruction = server._lootableConstruction || {};
+    server._worldLootableConstruction = server._worldLootableConstruction || {};
+    server._worldSimpleConstruction = server._worldSimpleConstruction || {};
+    server._clients = server._clients || {};
+    server._grid = server._grid || [];
   }
 
   isMongoBackedServer() {
@@ -334,7 +344,8 @@ class H1emuWebEditorPlugin extends BasePlugin {
       name: ITEM_NAME_BY_ID[itemDefId] || MODEL_NAME_BY_ID[modelId] || `${kind} ${itemDefId || modelId || "unknown"}`,
       pos: vector3(entityData.position),
       rot: entityData.rotation ? Array.from(entityData.rotation).slice(0, 4).map((n) => toNumber(n)) : [0, toNumber(entityData.eulerAngle), 0, 0],
-      euler: toNumber(entityData.eulerAngle, toNumber(entityData.rotation?.[1])),
+      // Door/gate records store their yaw in rotation[0]; everything else uses eulerAngle.
+      euler: kind === "door" ? toNumber(entityData.rotation?.[0]) : toNumber(entityData.eulerAngle, toNumber(entityData.rotation?.[1])),
       scale: scaleVector(entityData.scale || [1, 1, 1]),
       editable: false,
       source: "saved",
@@ -424,6 +435,26 @@ class H1emuWebEditorPlugin extends BasePlugin {
 
     if (req.method === "GET" && url.pathname === "/api/snapshot") {
       sendJson(res, 200, { type: "snapshot", objects: this.objectSnapshot(), players: this.playerSnapshot() });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/placeables") {
+      sendJson(res, 200, { items: this.placeableCatalog(), models: this.modelsCatalog() });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/model-mesh/")) {
+      this.serveModelMesh(res, Number(url.pathname.slice("/api/model-mesh/".length)) || 0);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/model-texture/")) {
+      this.serveModelTexture(res, decodeURIComponent(url.pathname.slice("/api/model-texture/".length)));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/presets") {
+      sendJson(res, 200, { presets: this.listPresets() });
       return;
     }
 
@@ -702,6 +733,38 @@ class H1emuWebEditorPlugin extends BasePlugin {
       if (!ok) this.sendWs(ws, { type: "error", message: "Transform failed" });
       return;
     }
+    if (msg.type === "transformBatch") {
+      // Whole multi-selection applied atomically (see applyTransformBatch).
+      const ok = this.applyTransformBatch(msg.items, Boolean(msg.final));
+      if (!ok) this.sendWs(ws, { type: "error", message: "Batch transform failed" });
+      return;
+    }
+    if (msg.type === "place") {
+      const payload = this.placeObject(msg);
+      if (payload) this.sendWs(ws, { type: "placed", object: payload });
+      else this.sendWs(ws, { type: "error", message: "Could not place that object" });
+      return;
+    }
+    if (msg.type === "delete") {
+      const ok = this.deleteObject(msg.id);
+      if (!ok) this.sendWs(ws, { type: "error", message: "Could not delete that object" });
+      return;
+    }
+    if (msg.type === "savePreset") {
+      const preset = this.savePreset(msg);
+      if (preset) this.broadcast({ type: "presets", presets: this.listPresets() });
+      else this.sendWs(ws, { type: "error", message: "Could not save preset" });
+      return;
+    }
+    if (msg.type === "deletePreset") {
+      if (this.deletePreset(msg.name)) this.broadcast({ type: "presets", presets: this.listPresets() });
+      else this.sendWs(ws, { type: "error", message: "Could not delete preset" });
+      return;
+    }
+    if (msg.type === "spawnPreset") {
+      if (!this.spawnPreset(msg)) this.sendWs(ws, { type: "error", message: "Could not spawn preset" });
+      return;
+    }
     this.sendWs(ws, { type: "error", message: `Unsupported message type: ${msg.type}` });
   }
 
@@ -793,8 +856,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
   entitySig(entity) {
     const p = this.entityPosition(entity);
     if (!p) return null;
-    const rot = this.entityRotation(entity);
-    const euler = toNumber(entity.eulerAngle, toNumber(rot && rot[1]));
+    const euler = this.entityYaw(entity);
     const scale = toNumber(entity.scale && entity.scale[0], 1);
     return [toNumber(p[0]), toNumber(p[1]), toNumber(p[2]), euler, scale];
   }
@@ -861,7 +923,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
       name,
       pos,
       rot,
-      euler: toNumber(entity.eulerAngle, toNumber(rot[1])),
+      euler: this.entityYaw(entity),
       scale,
       editable: true,
       source: "live",
@@ -874,6 +936,18 @@ class H1emuWebEditorPlugin extends BasePlugin {
 
   entityRotation(entity) {
     return entity?.state?.rotation || entity?.rotation || null;
+  }
+
+  // World yaw of an entity. Construction parents/children keep it in eulerAngle
+  // (== rotation[1]). Doors/gates (DoorEntity) instead keep it in startRot[0]
+  // (their closedAngle) and store state.rotation as a QUATERNION — so reading
+  // rotation[1] for them yields a quaternion component, not an angle.
+  entityYaw(entity) {
+    if (entity?.eulerAngle !== undefined) return toNumber(entity.eulerAngle);
+    if (entity?.startRot) return toNumber(entity.startRot[0]);
+    if (entity?.closedAngle !== undefined) return toNumber(entity.closedAngle);
+    const rot = this.entityRotation(entity);
+    return toNumber(rot && rot[1]);
   }
 
   filteredStaticZoneObjects(liveObjects) {
@@ -971,8 +1045,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
         if (!p) continue;
         const cid = String(entity.characterId || id);
         const px = toNumber(p[0]), py = toNumber(p[1]), pz = toNumber(p[2]);
-        const rot = this.entityRotation(entity);
-        const euler = toNumber(entity.eulerAngle, toNumber(rot && rot[1]));
+        const euler = this.entityYaw(entity);
         const scl = toNumber(entity.scale && entity.scale[0], 1);
         const rec = this.entitySigs.get(cid);
         if (!rec) {
@@ -1021,7 +1094,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
     const transform = {
       id: String(entry.id || entity.characterId),
       pos: msg.pos ? vector3(msg.pos, vector3(this.entityPosition(entity))) : vector3(this.entityPosition(entity)),
-      euler: msg.euler === undefined ? toNumber(entity.eulerAngle, toNumber(this.entityRotation(entity)?.[1])) : toNumber(msg.euler),
+      euler: msg.euler === undefined ? this.entityYaw(entity) : toNumber(msg.euler),
       scale: msg.scale ? scaleVector(msg.scale, scaleVector(entity.scale || [1, 1, 1])) : scaleVector(entity.scale || [1, 1, 1]),
     };
 
@@ -1046,46 +1119,537 @@ class H1emuWebEditorPlugin extends BasePlugin {
   }
 
   applyTransform(transform, persist = false) {
-    const entry = this.findPlacedObject(transform.id);
-    if (!entry) return false;
-    const entity = entry.entity;
-    const oldPos = vector3(this.entityPosition(entity));
-    const oldEuler = toNumber(entity.eulerAngle, toNumber(this.entityRotation(entity)?.[1]));
-    const applied = [[entry, transform]];
+    return this.applyTransformBatch([transform], persist);
+  }
 
-    // Foundations carry their attached pieces (walls, gates, shelters, expansions)
-    // rigidly: same translation, plus rotation of their offsets around the parent.
-    if (entry.kind === "foundation") {
-      const dYaw = transform.euler - oldEuler;
+  resolveTransformItem(item) {
+    const entry = this.findPlacedObject(item?.id);
+    if (!entry) return null;
+    const entity = entry.entity;
+    return [entry, {
+      id: String(entry.id || entity.characterId),
+      pos: item.pos ? vector3(item.pos, vector3(this.entityPosition(entity))) : vector3(this.entityPosition(entity)),
+      euler: item.euler === undefined ? this.entityYaw(entity) : toNumber(item.euler),
+      scale: item.scale ? scaleVector(item.scale, scaleVector(entity.scale || [1, 1, 1])) : scaleVector(entity.scale || [1, 1, 1]),
+    }];
+  }
+
+  // Applies a whole selection at once. Resolving every explicit target BEFORE
+  // moving anything keeps this order-independent: a foundation only drags the
+  // attached pieces the editor isn't already moving itself, so a piece that is
+  // both selected and attached can't get its delta applied twice.
+  applyTransformBatch(items, persist = false) {
+    const explicit = [];
+    const explicitIds = new Set();
+    for (const item of items || []) {
+      const resolved = this.resolveTransformItem(item);
+      if (!resolved) continue;
+      explicit.push(resolved);
+      explicitIds.add(resolved[1].id);
+    }
+    if (!explicit.length) return false;
+
+    const applied = explicit.slice();
+    for (const [entry, transform] of explicit) {
+      if (entry.kind !== "foundation") continue;
+      const entity = entry.entity;
+      const oldPos = vector3(this.entityPosition(entity));
+      const dYaw = transform.euler - this.entityYaw(entity);
       const cos = Math.cos(dYaw), sin = Math.sin(dYaw);
       for (const child of this.constructionChildren(entity)) {
-        const childEntry = this.findPlacedObject(child.characterId);
+        const cid = String(child.characterId);
+        if (explicitIds.has(cid)) continue; // moved explicitly — don't drag it too
+        const childEntry = this.findPlacedObject(cid);
         if (!childEntry || childEntry.entity === entity) continue;
         const cp = vector3(this.entityPosition(child));
         const ox = cp[0] - oldPos[0], oy = cp[1] - oldPos[1], oz = cp[2] - oldPos[2];
         applied.push([childEntry, {
-          id: String(child.characterId),
+          id: cid,
           pos: [transform.pos[0] + cos * ox + sin * oz, transform.pos[1] + oy, transform.pos[2] - sin * ox + cos * oz],
-          euler: toNumber(child.eulerAngle, toNumber(child.state?.rotation?.[1])) + dYaw,
+          euler: this.entityYaw(child) + dYaw,
           scale: scaleVector(child.scale || [1, 1, 1]),
         }]);
       }
     }
 
+    this.commitTransforms(applied, persist);
+    return true;
+  }
+
+  commitTransforms(applied, persist) {
+    // One entry per entity (an explicit transform wins over a dragged one).
+    const byEntity = new Map();
+    for (const [entry, transform] of applied) byEntity.set(entry.entity, [entry, transform]);
+    const list = [...byEntity.values()];
+
     const server = this.zoneServer();
     // Despawn everything, remove the whole group from the grid in ONE pass
     // (not once-per-entity over all ~1089 cells), then re-place and respawn.
-    for (const [targetEntry] of applied) this.despawnPlacedEntity(targetEntry.entity);
-    this.removeEntitiesFromGrid(new Set(applied.map(([e]) => e.entity)), server);
-    for (const [targetEntry, targetTransform] of applied) {
-      this.mutateEntityOnly(targetEntry, targetTransform);
-      if (typeof server?.pushToGridCell === "function") server.pushToGridCell(targetEntry.entity);
-      this.spawnPlacedEntity(targetEntry);
+    for (const [entry] of list) this.despawnPlacedEntity(entry.entity);
+    this.removeEntitiesFromGrid(new Set(list.map(([e]) => e.entity)), server);
+    const now = Date.now();
+    let registryTouched = false;
+    for (const [entry, transform] of list) {
+      this.mutateEntityOnly(entry, transform);
+      if (typeof server?.pushToGridCell === "function") server.pushToGridCell(entry.entity);
+      this.spawnPlacedEntity(entry);
+      this.lastRespawns.set(transform.id, now);
+      const record = this.registryByCharacterId.get(String(entry.entity.characterId));
+      if (record) {
+        record.pos = [transform.pos[0], transform.pos[1], transform.pos[2]];
+        record.euler = transform.euler;
+        record.scale = transform.scale[0];
+        registryTouched = true;
+      }
     }
-    this.lastRespawns.set(transform.id, Date.now());
-    if (persist) this.persistConstructionTransforms(applied);
-    this.broadcast({ type: "update", objects: applied.map(([targetEntry]) => this.objectPayload(targetEntry)) });
+    if (registryTouched) this.persistRegistry();
+    if (persist) this.persistConstructionTransforms(list);
+    this.broadcast({ type: "update", objects: list.map(([entry]) => this.objectPayload(entry)) });
+  }
+
+  // ---------- builder mode ----------
+
+  // The item -> placed-model mapping isn't in the item definitions (their
+  // MODEL_NAME is the inventory icon model). The live world is the ground
+  // truth, so derive the palette from the constructions actually loaded.
+  placeableCatalog() {
+    if (this._placeables) return this._placeables;
+    const out = new Map();
+    for (const [kind, dict] of this.constructionDictionaries()) {
+      for (const entity of Object.values(dict || {})) {
+        const itemDefId = Number(entity?.itemDefinitionId) || 0;
+        const modelId = Number(entity?.actorModelId) || 0;
+        if (!itemDefId || !modelId || out.has(itemDefId)) continue;
+        out.set(itemDefId, { itemDefId, modelId, kind, name: ITEM_NAME_BY_ID[itemDefId] || MODEL_NAME_BY_ID[modelId] || `item ${itemDefId}` });
+      }
+    }
+    this._placeables = [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return this._placeables;
+  }
+
+  // Every model from Models.json whose .adr exists in the assets dump — these
+  // are placeable as decorative props (simple constructions with no item id).
+  modelsCatalog() {
+    if (this._modelsCatalog) return this._modelsCatalog;
+    const out = [];
+    try {
+      const models = JSON.parse(fs.readFileSync(path.join(h1z1ServerRoot, "data", "2016", "dataSources", "Models.json"), "utf8"));
+      for (const m of models) {
+        const file = String(m.MODEL_FILE_NAME || "");
+        if (!file.toLowerCase().endsWith(".adr")) continue;
+        if (!fs.existsSync(path.join(this.config.assetsDir, file))) continue;
+        const name = file.replace(/\.adr$/i, "");
+        out.push({ modelId: Number(m.ID), name, desc: String(m.DESCRIPTION || "") });
+        if (!MODEL_NAME_BY_ID[m.ID]) MODEL_NAME_BY_ID[m.ID] = name;
+      }
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Could not build models catalog: ${err.message}`);
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    this._modelsCatalog = out;
+    console.log(`[h1emu-web-editor] Models catalog: ${out.length} placeable models from Models.json.`);
+    return out;
+  }
+
+  modelFileById(modelId) {
+    if (!this._modelFileById) {
+      this._modelFileById = new Map();
+      try {
+        const models = JSON.parse(fs.readFileSync(path.join(h1z1ServerRoot, "data", "2016", "dataSources", "Models.json"), "utf8"));
+        for (const m of models) this._modelFileById.set(Number(m.ID), String(m.MODEL_FILE_NAME || ""));
+      } catch (_) {}
+    }
+    return this._modelFileById.get(Number(modelId)) || null;
+  }
+
+  // On-demand mesh for any model id: parse the .adr/.dme (full detail) and cache.
+  // Binary "MSH1": u32 headerLen | header JSON {texture} | u32 vc | u32 ic |
+  //                f32 verts[vc*5] (x,y,z,u,v) | u32 indices[ic]
+  serveModelMesh(res, modelId) {
+    if (!this._meshCache) this._meshCache = new Map();
+    let buf = this._meshCache.get(modelId);
+    if (buf === undefined) {
+      buf = null;
+      const adr = this.modelFileById(modelId);
+      if (adr) {
+        try {
+          const dmePath = dme.pickDme(this.config.assetsDir, adr, true);
+          const mesh = dmePath ? dme.parseDme(dmePath) : null;
+          if (mesh) {
+            const texture = dme.pickDiffuse([...mesh.texNames, ...dme.adrTextureAliases(this.config.assetsDir, adr)]) || "";
+            let headerJson = JSON.stringify({ texture });
+            while (Buffer.byteLength(headerJson) % 4 !== 0) headerJson += " ";
+            const header = Buffer.from(headerJson, "utf8");
+            const vc = mesh.verts.length / 5, ic = mesh.indices.length;
+            buf = Buffer.alloc(4 + 4 + header.length + 8 + vc * 20 + ic * 4);
+            let off = 0;
+            buf.write("MSH1", off); off += 4;
+            buf.writeUInt32LE(header.length, off); off += 4;
+            header.copy(buf, off); off += header.length;
+            buf.writeUInt32LE(vc, off); buf.writeUInt32LE(ic, off + 4); off += 8;
+            for (const v of mesh.verts) { buf.writeFloatLE(v, off); off += 4; }
+            for (const i of mesh.indices) { buf.writeUInt32LE(i, off); off += 4; }
+          }
+        } catch (err) {
+          console.warn(`[h1emu-web-editor] Mesh parse failed for model ${modelId}: ${err.message}`);
+        }
+      }
+      this._meshCache.set(modelId, buf);
+    }
+    if (!buf) { sendJson(res, 404, { message: "No mesh for that model." }); return; }
+    res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": buf.length, "Cache-Control": "public, max-age=3600" });
+    res.end(buf);
+  }
+
+  // Serves any texture from the assets dump, mip-capped to 256px, cached.
+  serveModelTexture(res, texName) {
+    if (!texName || texName.includes("..") || texName.includes("/") || texName.includes("\\")) {
+      sendJson(res, 400, { message: "Invalid texture name." });
+      return;
+    }
+    if (!this._texCache) this._texCache = new Map();
+    let buf = this._texCache.get(texName);
+    if (buf === undefined) {
+      buf = null;
+      const src = path.join(this.config.assetsDir, texName);
+      try {
+        if (fs.existsSync(src)) buf = dme.capDds(fs.readFileSync(src), 256);
+      } catch (_) {}
+      this._texCache.set(texName, buf);
+    }
+    if (!buf) { sendJson(res, 404, { message: "Texture not found." }); return; }
+    res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": buf.length, "Cache-Control": "public, max-age=3600" });
+    res.end(buf);
+  }
+
+  // ---------- editor-placed object persistence ----------
+  // The zone server's own world save only persists foundations (with attached
+  // children) and world lootables. Free-standing walls/shelters, doors with no
+  // parent, and arbitrary prop models would vanish on restart — so the plugin
+  // keeps its own registry and respawns them.
+  registryFile() { return path.join(this.dir || __dirname, "editor-objects.json"); }
+
+  isServerPersisted(entry) {
+    if (entry.kind === "foundation" || entry.kind === "lootable" || entry.kind === "worldLootable") return true;
+    if (entry.kind === "simple" || entry.kind === "door") return Boolean(entry.entity.parentObjectCharacterId);
+    return false;
+  }
+
+  loadRegistry() {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.registryFile(), "utf8"));
+      return Array.isArray(data) ? data : [];
+    } catch (_) { return []; }
+  }
+
+  persistRegistry() {
+    try {
+      const tmp = `${this.registryFile()}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(this.editorObjects, null, 2));
+      fs.renameSync(tmp, this.registryFile());
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Could not persist editor objects: ${err.message}`);
+    }
+  }
+
+  registerEditorObject(entry, itemDefinitionId, modelId) {
+    if (this.isServerPersisted(entry)) return;
+    const sig = this.entitySig(entry.entity) || [0, 0, 0, 0, 1];
+    const record = { rid: crypto.randomBytes(8).toString("hex"), itemDefinitionId, modelId, pos: [sig[0], sig[1], sig[2]], euler: sig[3], scale: sig[4] };
+    this.editorObjects.push(record);
+    this.registryByCharacterId.set(String(entry.entity.characterId), record);
+    this.persistRegistry();
+  }
+
+  respawnEditorObjects() {
+    if (this.editorObjectsSpawned) return;
+    this.editorObjectsSpawned = true;
+    let ok = 0;
+    for (const record of this.editorObjects) {
+      const entry = this.placeConstructionEntity(Number(record.itemDefinitionId) || 0, Number(record.modelId) || 0, vector3(record.pos), toNumber(record.euler), toNumber(record.scale, 1));
+      if (entry) {
+        this.registryByCharacterId.set(String(entry.entity.characterId), record);
+        ok++;
+      }
+    }
+    if (this.editorObjects.length) console.log(`[h1emu-web-editor] Respawned ${ok}/${this.editorObjects.length} editor-placed objects.`);
+  }
+
+  constructionDictionaries() {
+    const server = this.zoneServer();
+    return [
+      ["foundation", server?._constructionFoundations],
+      ["simple", server?._constructionSimple],
+      ["door", server?._constructionDoors],
+      ["lootable", server?._lootableConstruction],
+      ["worldLootable", server?._worldLootableConstruction],
+      ["worldSimple", server?._worldSimpleConstruction],
+    ].filter(([, dict]) => dict && typeof dict === "object");
+  }
+
+  dictForKind(kind) {
+    const server = this.zoneServer();
+    return {
+      foundation: server?._constructionFoundations,
+      simple: server?._constructionSimple,
+      door: server?._constructionDoors,
+      lootable: server?._lootableConstruction,
+      worldLootable: server?._worldLootableConstruction,
+      worldSimple: server?._worldSimpleConstruction,
+    }[kind] || null;
+  }
+
+  snapshotConstructionIds() {
+    const seen = new Set();
+    for (const [, dict] of this.constructionDictionaries()) for (const id in dict) seen.add(id);
+    return seen;
+  }
+
+  findNewConstructionEntry(before) {
+    for (const [kind, dict] of this.constructionDictionaries()) {
+      for (const id in dict) {
+        if (before.has(id)) continue;
+        const entity = dict[id];
+        if (!entity) continue;
+        if (!entity.characterId) entity.characterId = id;
+        return { kind, entity, id: String(entity.characterId || id) };
+      }
+    }
+    return null;
+  }
+
+  // Creates one construction entity in the world (no broadcast/save). Returns
+  // its editor entry, or null. Shared by builder placement and preset spawning.
+  placeConstructionEntity(itemDefinitionId, modelId, p, yaw, scaleVal = 1) {
+    const server = this.zoneServer();
+    const cm = server?.constructionManager;
+    if (!cm || typeof server.generateGuid !== "function") return null;
+    // itemDefinitionId 0 = raw model prop (from Models.json) placed as a simple construction.
+    if (!modelId || !p.every((n) => Number.isFinite(n))) return null;
+
+    const position = new Float32Array([p[0], p[1], p[2], 1]);
+    // Construction entities keep yaw in rotation[1]; the manager's place* helpers
+    // that run fixEulerOrder themselves expect it in rotation[0] (see fixEulerOrder).
+    const fixed = new Float32Array([0, yaw, 0, 0]);
+    const raw = new Float32Array([yaw, 0, 0, 0]);
+    const s = Math.max(0.05, Number(scaleVal) || 1);
+    const scale = new Float32Array([s, s, s, 1]);
+    const I = enums.Items;
+
+    const before = this.snapshotConstructionIds();
+    try {
+      switch (itemDefinitionId) {
+        case I.FOUNDATION:
+        case I.FOUNDATION_EXPANSION:
+        case I.SHACK:
+        case I.SHACK_BASIC:
+        case I.SHACK_SMALL:
+        case I.GROUND_TAMPER: {
+          const characterId = server.generateGuid();
+          const npc = new ConstructionParentEntity(characterId, server.getTransientId(characterId), modelId,
+            position, fixed, server, itemDefinitionId, "", "", "", "", yaw);
+          server._constructionFoundations[characterId] = npc;
+          break;
+        }
+        case I.METAL_GATE:
+        case I.DOOR_BASIC:
+        case I.DOOR_WOOD:
+        case I.DOOR_METAL: {
+          const characterId = server.generateGuid();
+          const npc = new ConstructionDoor(characterId, server.getTransientId(characterId), modelId,
+            position, raw, server, itemDefinitionId, "", "", "");
+          server._constructionDoors[characterId] = npc;
+          break;
+        }
+        case I.STORAGE_BOX:
+        case I.REPAIR_BOX:
+          cm.placeLootableConstruction(server, itemDefinitionId, modelId, position, fixed, "");
+          break;
+        case I.FURNACE:
+        case I.BARBEQUE:
+        case I.CAMPFIRE:
+          cm.placeSmeltingEntity(server, itemDefinitionId, modelId, position, fixed, scale, "");
+          break;
+        case I.BEE_BOX:
+        case I.DEW_COLLECTOR:
+        case I.ANIMAL_TRAP:
+          cm.placeCollectingEntity(server, itemDefinitionId, modelId, position, fixed, "");
+          break;
+        default:
+          cm.placeSimpleConstruction(server, modelId, position, raw, scale, "", itemDefinitionId);
+          break;
+      }
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Place failed for item ${itemDefinitionId}: ${err.message}`);
+      return null;
+    }
+
+    const entry = this.findNewConstructionEntry(before);
+    if (!entry) return null;
+    // Ensure the requested scale actually lands on the entity.
+    entry.entity.scale = new Float32Array([s, s, s, 1]);
+    if (typeof server.pushToGridCell === "function") server.pushToGridCell(entry.entity);
+    this.spawnPlacedEntity(entry);
+    const sig = this.entitySig(entry.entity);
+    if (sig) this.entitySigs.set(String(entry.entity.characterId), { v: sig, gen: this.scanGen });
+    return entry;
+  }
+
+  placeObject(msg) {
+    const p = vector3(msg.pos);
+    const itemDefinitionId = Number(msg?.itemDefinitionId) || 0;
+    const modelId = Number(msg?.modelId) || 0;
+    const entry = this.placeConstructionEntity(itemDefinitionId, modelId, p, toNumber(msg.euler), toNumber(msg.scale, 1));
+    if (!entry) return null;
+    this.registerEditorObject(entry, itemDefinitionId, modelId);
+    const payload = this.objectPayload(entry);
+    this.broadcast({ type: "update", objects: [payload] });
+    this.scheduleWorldSave();
+    console.log(`[h1emu-web-editor] Placed ${payload.name} (${entry.kind}) at ${p.map((n) => n.toFixed(1)).join(", ")}`);
+    return payload;
+  }
+
+  // ---------- presets (prefabs) ----------
+  presetsDir() {
+    const dir = path.join(this.dir || __dirname, "presets");
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    return dir;
+  }
+
+  presetPath(name) {
+    const safe = String(name || "").replace(/[^a-zA-Z0-9 _\-()]/g, "").trim().slice(0, 64);
+    if (!safe) return null;
+    return { safe, file: path.join(this.presetsDir(), `${safe}.json`) };
+  }
+
+  listPresets() {
+    const out = [];
+    let files = [];
+    try { files = fs.readdirSync(this.presetsDir()); } catch (_) {}
+    for (const f of files) {
+      if (!f.toLowerCase().endsWith(".json")) continue;
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(this.presetsDir(), f), "utf8"));
+        if (Array.isArray(data.objects)) out.push(data);
+      } catch (_) {}
+    }
+    return out.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  savePreset(msg) {
+    const target = this.presetPath(msg?.name);
+    if (!target) return null;
+    const objects = (Array.isArray(msg.objects) ? msg.objects : [])
+      .map((o) => ({
+        itemDefinitionId: Number(o.itemDefinitionId) || 0,
+        modelId: Number(o.modelId) || 0,
+        rel: vector3(o.rel),
+        euler: toNumber(o.euler),
+        scale: Math.max(0.05, toNumber(o.scale, 1)),
+      }))
+      .filter((o) => o.modelId); // itemDefinitionId 0 = raw prop model, allowed
+    if (!objects.length) return null;
+    const preset = { name: target.safe, created: Date.now(), objects };
+    try {
+      fs.writeFileSync(target.file, JSON.stringify(preset, null, 2));
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Could not save preset: ${err.message}`);
+      return null;
+    }
+    console.log(`[h1emu-web-editor] Saved preset "${target.safe}" (${objects.length} objects).`);
+    return preset;
+  }
+
+  deletePreset(name) {
+    const target = this.presetPath(name);
+    if (!target || !fs.existsSync(target.file)) return false;
+    try { fs.unlinkSync(target.file); return true; } catch (_) { return false; }
+  }
+
+  // Spawns a saved preset with anchor `pos` and placement `euler`, rotating each
+  // object's stored offset/facing by that yaw. All placed in one batch.
+  spawnPreset(msg) {
+    const target = this.presetPath(msg?.name);
+    if (!target || !fs.existsSync(target.file)) return false;
+    let preset;
+    try { preset = JSON.parse(fs.readFileSync(target.file, "utf8")); } catch (_) { return false; }
+    const anchor = vector3(msg.pos);
+    if (!anchor.every((n) => Number.isFinite(n))) return false;
+    const yaw = toNumber(msg.euler);
+    const cos = Math.cos(yaw), sin = Math.sin(yaw);
+
+    const payloads = [];
+    for (const o of preset.objects || []) {
+      const rel = vector3(o.rel);
+      // Rotate the stored XZ offset around Y (same convention as foundation drag).
+      const wx = anchor[0] + cos * rel[0] + sin * rel[2];
+      const wz = anchor[2] - sin * rel[0] + cos * rel[2];
+      const entry = this.placeConstructionEntity(Number(o.itemDefinitionId) || 0, Number(o.modelId) || 0,
+        [wx, anchor[1] + rel[1], wz], toNumber(o.euler) + yaw, toNumber(o.scale, 1));
+      if (entry) {
+        this.registerEditorObject(entry, Number(o.itemDefinitionId) || 0, Number(o.modelId) || 0);
+        payloads.push(this.objectPayload(entry));
+      }
+    }
+    if (!payloads.length) return false;
+    this.broadcast({ type: "update", objects: payloads });
+    this.scheduleWorldSave();
+    console.log(`[h1emu-web-editor] Spawned preset "${target.safe}" (${payloads.length} objects).`);
     return true;
+  }
+
+  deleteObject(id) {
+    const entry = this.findPlacedObject(id);
+    if (!entry || !this.isConstructionEntry(entry)) return false;
+    const server = this.zoneServer();
+    const dict = this.dictForKind(entry.kind);
+    if (!dict) return false;
+    // Take the whole base with a foundation, otherwise pieces would be orphaned.
+    const targets = [entry];
+    if (entry.kind === "foundation") {
+      for (const child of this.constructionChildren(entry.entity)) {
+        const childEntry = this.findPlacedObject(child.characterId);
+        if (childEntry && childEntry.entity !== entry.entity) targets.push(childEntry);
+      }
+    }
+    const removed = [];
+    for (const target of targets) {
+      const targetDict = this.dictForKind(target.kind);
+      if (!targetDict) continue;
+      try {
+        if (typeof server?.deleteEntity === "function") server.deleteEntity(target.entity.characterId, targetDict);
+        else { this.despawnPlacedEntity(target.entity); delete targetDict[target.entity.characterId]; }
+      } catch (_) {
+        this.despawnPlacedEntity(target.entity);
+        delete targetDict[target.entity.characterId];
+      }
+      removed.push(String(target.entity.characterId));
+      this.entitySigs.delete(String(target.entity.characterId));
+      const record = this.registryByCharacterId.get(String(target.entity.characterId));
+      if (record) {
+        this.registryByCharacterId.delete(String(target.entity.characterId));
+        this.editorObjects = this.editorObjects.filter((r) => r.rid !== record.rid);
+        this.persistRegistry();
+      }
+    }
+    this.removeEntitiesFromGrid(new Set(targets.map((t) => t.entity)), server);
+    if (removed.length) this.broadcast({ type: "removed", ids: removed });
+    this.scheduleWorldSave();
+    console.log(`[h1emu-web-editor] Deleted ${removed.length} construction(s) starting at ${id}`);
+    return true;
+  }
+
+  scheduleWorldSave() {
+    const server = this.zoneServer();
+    if (typeof server?.saveWorld !== "function") return;
+    if (this.saveWorldTimer) clearTimeout(this.saveWorldTimer);
+    this.saveWorldTimer = setTimeout(() => {
+      this.saveWorldTimer = null;
+      Promise.resolve(server.saveWorld()).then(
+        () => console.log("[h1emu-web-editor] World save triggered after edit."),
+        (err) => console.warn(`[h1emu-web-editor] World save failed: ${err.message}`)
+      );
+    }, 5000);
   }
 
   removeEntitiesFromGrid(entitySet, server) {
@@ -1123,14 +1687,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
     if (typeof server?.saveWorld === "function") {
       // Let the server persist its own live entities (single writer, guarded
       // against concurrent saves) instead of the plugin writing save files.
-      if (this.saveWorldTimer) clearTimeout(this.saveWorldTimer);
-      this.saveWorldTimer = setTimeout(() => {
-        this.saveWorldTimer = null;
-        Promise.resolve(server.saveWorld()).then(
-          () => console.log("[h1emu-web-editor] World save triggered after construction edit."),
-          (err) => console.warn(`[h1emu-web-editor] World save failed: ${err.message}`)
-        );
-      }, 5000);
+      this.scheduleWorldSave();
       return;
     }
     if (this.isMongoBackedServer()) {
@@ -1171,8 +1728,14 @@ class H1emuWebEditorPlugin extends BasePlugin {
     if (String(record.characterId) === String(transform.id)) {
       const w = Array.isArray(record.position) && record.position.length > 3 ? record.position[3] : 1;
       record.position = [transform.pos[0], transform.pos[1], transform.pos[2], w];
-      record.eulerAngle = transform.euler;
-      record.rotation = [0, transform.euler, 0, Array.isArray(record.rotation) && record.rotation.length > 3 ? record.rotation[3] : 0];
+      const tail = Array.isArray(record.rotation) && record.rotation.length > 3 ? record.rotation[3] : 0;
+      if (record.passwordHash !== undefined) {
+        // Door/gate record: yaw goes in rotation[0] (matches startRot on load).
+        record.rotation = [transform.euler, 0, 0, tail];
+      } else {
+        record.eulerAngle = transform.euler;
+        record.rotation = [0, transform.euler, 0, tail];
+      }
       if (Array.isArray(record.scale)) record.scale = [transform.scale[0], transform.scale[1], transform.scale[2], record.scale[3] ?? 1];
       updated = true;
     }
@@ -1213,11 +1776,26 @@ class H1emuWebEditorPlugin extends BasePlugin {
     if (!entity.state) entity.state = {};
     entity.state.position = new Float32Array(transform.pos);
     entity.position = entity.state.position;
-    const rot = this.entityRotation(entity) ? Array.from(this.entityRotation(entity)) : [0, 0, 0, 0];
-    rot[1] = transform.euler;
-    entity.state.rotation = new Float32Array(rot.length >= 4 ? rot.slice(0, 4) : [0, transform.euler, 0, 0]);
-    entity.rotation = entity.state.rotation;
-    if ("eulerAngle" in entity) entity.eulerAngle = transform.euler;
+
+    if (entity.startRot) {
+      // Door/gate (DoorEntity): yaw lives in startRot[0]; open/closed angles are
+      // derived from it and state.rotation is a quaternion. The save format also
+      // writes rotation straight from startRot, so keep them all in sync.
+      const startRot = Array.from(entity.startRot);
+      while (startRot.length < 4) startRot.push(0);
+      startRot[0] = transform.euler;
+      entity.startRot = new Float32Array(startRot.slice(0, 4));
+      entity.closedAngle = transform.euler;
+      entity.openAngle = transform.euler + 1.575;
+      entity.state.rotation = new Float32Array(eul2quat(new Float32Array(startRot.slice(0, 4))));
+      entity.rotation = entity.state.rotation;
+    } else {
+      const rot = this.entityRotation(entity) ? Array.from(this.entityRotation(entity)) : [0, 0, 0, 0];
+      rot[1] = transform.euler;
+      entity.state.rotation = new Float32Array(rot.length >= 4 ? rot.slice(0, 4) : [0, transform.euler, 0, 0]);
+      entity.rotation = entity.state.rotation;
+      if ("eulerAngle" in entity) entity.eulerAngle = transform.euler;
+    }
     entity.scale = new Float32Array([transform.scale[0], transform.scale[1], transform.scale[2], 1]);
     this.refreshConstructionGeometry(entry);
   }
@@ -1225,7 +1803,7 @@ class H1emuWebEditorPlugin extends BasePlugin {
   refreshConstructionGeometry(entry) {
     const entity = entry.entity;
     const p = entity.state.position;
-    const yaw = toNumber(entity.eulerAngle, toNumber(entity.state.rotation?.[1]));
+    const yaw = this.entityYaw(entity);
     if (entry.kind === "door" && "fixedPosition" in entity) {
       const distance = entity.itemDefinitionId === enums.Items.DOOR_METAL || entity.itemDefinitionId === enums.Items.DOOR_WOOD ? 0.625 : 2.5;
       entity.fixedPosition = movePoint(p, -toNumber(entity.openAngle), distance);

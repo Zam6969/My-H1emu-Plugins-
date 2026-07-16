@@ -1,0 +1,17 @@
+{
+  "name": "test",
+  "created": 1784213882620,
+  "objects": [
+    {
+      "itemDefinitionId": 0,
+      "modelId": 10024,
+      "rel": [
+        0,
+        0,
+        0
+      ],
+      "euler": 0.01806873531776307,
+      "scale": 4.917618274688721
+    }
+  ]
+}

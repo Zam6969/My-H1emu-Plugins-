@@ -2,3 +2,5 @@ port: 8380
 bindAddress: 127.0.0.1
 password: "change-me"
 updateRateHz: 10
+# Unpacked game assets (.adr/.dme/.dds) used for on-demand builder models
+assetsDir: "E:/big boy stuff/FORMAT/Why2.0"

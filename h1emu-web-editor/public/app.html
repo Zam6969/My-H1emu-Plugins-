@@ -14,6 +14,8 @@
     #topbar { position: fixed; left: 14px; top: 14px; display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); backdrop-filter: blur(12px); }
     #status { color: #9db0cb; font-size: 13px; }
     #panel { position: fixed; top: 14px; right: 14px; bottom: 14px; width: min(390px, calc(100vw - 28px)); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); backdrop-filter: blur(12px); box-shadow: 0 18px 70px rgba(0, 0, 0, 0.34); }
+    #builder-dock { position: fixed; left: 14px; top: 74px; width: min(340px, calc(100vw - 28px)); max-height: calc(100vh - 90px); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); backdrop-filter: blur(12px); box-shadow: 0 18px 70px rgba(0, 0, 0, 0.34); }
+    #builder-dock h2:first-child { margin-top: 0; }
     h1 { margin: 0 0 10px; font-size: 20px; }
     h2 { margin: 18px 0 8px; font-size: 13px; color: #9db0cb; letter-spacing: 0.08em; text-transform: uppercase; }
     button, input, select { border-radius: 8px; border: 1px solid #3a4d6c; background: #101824; color: #edf3ff; }
@@ -37,6 +39,10 @@
     #crosshair:after { left: 0; top: 8px; width: 18px; height: 2px; }
     #pending-bar { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 12px 16px; border: 1px solid #d9a441; border-radius: 12px; background: var(--panel); backdrop-filter: blur(12px); box-shadow: 0 12px 44px rgba(0, 0, 0, 0.45); z-index: 20; }
     #pending-bar strong { color: #ffd24d; }
+    #gizmo-toolbar { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); display: flex; gap: 6px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); backdrop-filter: blur(12px); z-index: 20; }
+    #gizmo-toolbar button { padding: 7px 12px; border: 1px solid #33465f; background: #101824; color: #cdd8ea; font-weight: 700; }
+    #gizmo-toolbar button.active { border-color: #5fb3ff; background: #16324e; color: #eaf4ff; }
+    #gizmo-toolbar .gk { color: #7f93ac; font-weight: 400; font-size: 11px; margin-left: 5px; }
     @media (max-width: 760px) {
       #panel { top: auto; left: 10px; right: 10px; bottom: 10px; width: auto; max-height: 48vh; }
       #topbar { left: 10px; top: 10px; right: 10px; }
@@ -47,6 +53,11 @@
   <canvas id="view"></canvas>
   <canvas id="overlay"></canvas>
   <div id="crosshair"></div>
+  <div id="gizmo-toolbar" hidden>
+    <button id="gizmo-move" class="active">Move<span class="gk">1</span></button>
+    <button id="gizmo-rotate">Rotate<span class="gk">2</span></button>
+    <button id="gizmo-scale">Scale<span class="gk">3</span></button>
+  </div>
   <div id="pending-bar" hidden>
     <strong>Done moving?</strong>
     <span id="pending-text" class="muted"></span>
@@ -58,10 +69,28 @@
     <span id="status">connecting...</span>
     <button id="logout" class="danger">Logout</button>
   </div>
+  <aside id="builder-dock">
+    <h2>Builder</h2>
+    <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="builder-toggle" type="checkbox" style="width:auto;margin:0"> Builder mode <span class="muted">(B)</span></label>
+    <div id="builder-panel" hidden>
+      <div class="muted" style="margin:8px 0">Click the ground to place. <b>R</b>/<b>F</b> rotates, <b>Esc</b> cancels. <b>Delete</b> removes the selection.</div>
+      <input id="builder-search" type="search" placeholder="Filter placeable items">
+      <div id="builder-list" style="max-height:190px; overflow:auto; border:1px solid #23334a; border-radius:9px; margin-top:8px"></div>
+      <div id="builder-chosen" class="muted" style="margin-top:8px">No item selected.</div>
+      <canvas id="preview-canvas" width="320" height="210" style="width:100%; border:1px solid #23334a; border-radius:9px; margin-top:8px; display:none; background:#0a0f16"></canvas>
+    </div>
+    <h2>Presets</h2>
+    <div class="muted" style="margin-bottom:6px">Select some placed objects, name it, and save. Spawn drops the whole thing on the ground (R/F rotates it).</div>
+    <div class="row">
+      <input id="preset-name" placeholder="Preset name">
+      <button id="preset-save">Save selection</button>
+    </div>
+    <div id="preset-list" style="margin-top:8px"></div>
+  </aside>
   <aside id="panel">
     <h1>Construction Editor</h1>
     <div class="muted"><span id="object-count">0</span> constructions, <span id="rendered-count">0</span> GPU instances, <span id="player-count">0</span> players</div>
-    <div class="muted" style="margin-top:8px">Hold right click to look and use WASD/QE, mouse wheel zooms. Left click a construction model to select it, then drag the colored gizmo arrows to move it or the yellow ring to rotate it.</div>
+    <div class="muted" style="margin-top:8px">Hold right click to look and use WASD/QE, mouse wheel zooms. Left click a construction to select it, then drag the gizmo. Switch gizmo with the top toolbar or keys <b>1</b> Move, <b>2</b> Rotate, <b>3</b> Scale.</div>
     <h2>Camera</h2>
     <div class="row">
       <button id="home">Home</button>
@@ -147,8 +176,20 @@
       const worldDistance = document.getElementById("world-distance");
       const worldDistanceValue = document.getElementById("world-distance-value");
       const treesToggle = document.getElementById("trees-toggle");
+      const builderToggle = document.getElementById("builder-toggle");
+      const builderPanel = document.getElementById("builder-panel");
+      const builderList = document.getElementById("builder-list");
+      const builderSearch = document.getElementById("builder-search");
+      const builderChosen = document.getElementById("builder-chosen");
+      const presetName = document.getElementById("preset-name");
+      const presetSaveBtn = document.getElementById("preset-save");
+      const presetListEl = document.getElementById("preset-list");
       const pendingBar = document.getElementById("pending-bar");
       const pendingText = document.getElementById("pending-text");
+      const gizmoToolbar = document.getElementById("gizmo-toolbar");
+      const gizmoMoveBtn = document.getElementById("gizmo-move");
+      const gizmoRotateBtn = document.getElementById("gizmo-rotate");
+      const gizmoScaleBtn = document.getElementById("gizmo-scale");
       const fields = {
         kind: document.getElementById("selected-kind"), source: document.getElementById("selected-source"),
         name: document.getElementById("selected-name"), id: document.getElementById("selected-id"),
@@ -163,6 +204,7 @@
       let selectedId = "";              // primary selection (drives the detail panel)
       const selectedIds = new Set();    // full multi-selection set (includes primary)
       const isSelected = (id) => selectedIds.has(id);
+      let gizmoMode = "move";           // "move" | "rotate" | "scale"
       let projectedObjects = [];
       let gizmoHandles = [];
       let activeGizmo = null;
@@ -414,17 +456,27 @@
         if (wm.conKey === conKey && moved < 64) return;
         const renderDistanceSq = (renderDistance + 64) * (renderDistance + 64);
         const groups = new Map();
+        const dynGroups = new Map();
         let count = 0;
         for (const obj of objects.values()) {
           if (isSelected(obj.id)) continue;
-          const entry = constructionEntryFor(obj);
-          if (!entry) continue;
           const dx = obj.pos[0] - camera.x, dz = obj.pos[2] - camera.z;
           if (dx * dx + dz * dz > renderDistanceSq) continue;
-          let group = groups.get(entry);
-          if (!group) { group = []; groups.set(entry, group); }
-          group.push(obj);
-          count++;
+          const entry = constructionEntryFor(obj);
+          if (entry) {
+            let group = groups.get(entry);
+            if (!group) { group = []; groups.set(entry, group); }
+            group.push(obj);
+            count++;
+            continue;
+          }
+          // Prop models outside the baked library get their own per-mesh batch.
+          const mesh = dynMeshReadyFor(obj);
+          if (mesh) {
+            let group = dynGroups.get(mesh);
+            if (!group) { group = []; dynGroups.set(mesh, group); }
+            group.push(obj);
+          }
         }
         const data = new Float32Array(count * 5);
         wm.conBatches = [];
@@ -441,6 +493,20 @@
         }
         gl.bindBuffer(gl.ARRAY_BUFFER, wm.conInstBuf);
         gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        for (const mesh of dyn.meshes.values()) mesh.count = 0;
+        for (const [mesh, list] of dynGroups) {
+          const dd = new Float32Array(list.length * 5);
+          let k = 0;
+          for (const obj of list) {
+            dd[k] = obj.pos[0]; dd[k + 1] = obj.pos[1]; dd[k + 2] = obj.pos[2];
+            dd[k + 3] = -(Number(obj.euler) || 0);
+            dd[k + 4] = Number(obj.scale?.[0]) || 1;
+            k += 5;
+          }
+          gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, dd, gl.DYNAMIC_DRAW);
+          mesh.count = list.length;
+        }
         wm.conKey = conKey;
         wm.conCachePos = [camera.x, camera.z];
       }
@@ -488,7 +554,9 @@
         const drawSets = [];
         if (drawWorld && wm.batches.length) drawSets.push([wm.instBuf, wm.batches]);
         if (wm.conBatches.length) drawSets.push([wm.conInstBuf, wm.conBatches]);
-        if (!drawSets.length) return;
+        let hasDyn = false;
+        for (const mesh of dyn.meshes.values()) if (mesh.count) { hasDyn = true; break; }
+        if (!drawSets.length && !hasDyn) return;
         gl.disable(gl.CULL_FACE);
         gl.useProgram(wm.program);
         gl.bindVertexArray(wm.vao);
@@ -513,6 +581,24 @@
             gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, batch.instOffset * 20 + 12);
             gl.drawElementsInstanced(gl.TRIANGLES, batch.actor.indexCount, gl.UNSIGNED_INT, batch.actor.indexStart * 4, batch.instCount);
           }
+        }
+        // Placed prop models (on-demand meshes), one instanced draw per mesh.
+        // Instance pointers are re-set per draw since the ghost may repoint them.
+        for (const mesh of dyn.meshes.values()) {
+          if (!mesh.count) continue;
+          const tex = dynTexture(mesh.texName);
+          if (tex) {
+            gl.uniform1i(wm.uniforms.hasTex, 1);
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+          } else {
+            gl.uniform1i(wm.uniforms.hasTex, 0);
+            gl.uniform3f(wm.uniforms.color, 0.64, 0.62, 0.58);
+          }
+          gl.bindVertexArray(mesh.vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instBuf);
+          gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+          gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+          gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0, mesh.count);
         }
         gl.bindVertexArray(null);
         gl.enable(gl.CULL_FACE);
@@ -900,7 +986,12 @@
               const z = view.getInt32(off, true); off += 4;
               const x = view.getInt32(off, true); off += 4;
               const texName = `Z1_${z}_${x}_colornx.dds`;
-              chunks.push({ texName, indexStart, indexCount, firstVert, center: [x * 64 + 128, 180, z * 64 + 128] });
+              // Chunks cover a fixed 256m square: worldX = chunkX*64 .. +256 (same for Z).
+              chunks.push({
+                texName, indexStart, indexCount, firstVert,
+                minX: x * 64, minZ: z * 64, maxX: x * 64 + 256, maxZ: z * 64 + 256,
+                center: [x * 64 + 128, 180, z * 64 + 128],
+              });
               texNames.push(texName);
             }
 
@@ -982,6 +1073,9 @@
             };
             terrain.chunks = chunks;
             terrain.texCache = {};
+            // Kept on the CPU so builder mode can raycast the ground.
+            terrain.positions = positions;
+            terrain.indices = indices;
             terrain.loaded = true;
             console.log(`[terrain] Loaded ${vcount} vertices, ${icount} indices, ${chunkCount} chunks`);
 
@@ -1251,14 +1345,6 @@
         ctx.stroke();
       }
 
-      function drawGrid() {
-        for (let v = -4096; v <= 4096; v += 512) {
-          const major = v % 1024 === 0;
-          drawLine([-4096, 0, v], [4096, 0, v], major ? "rgba(90,120,160,0.36)" : "rgba(90,120,160,0.18)", major ? 1.3 : 1);
-          drawLine([v, 0, -4096], [v, 0, 4096], major ? "rgba(90,120,160,0.36)" : "rgba(90,120,160,0.18)", major ? 1.3 : 1);
-        }
-      }
-
       function drawPlayers() {
         for (const player of players) {
           const p = player.pos || [0, 0, 0];
@@ -1284,65 +1370,75 @@
           const dm = cubeDims(o); spread = Math.max(spread, Math.max(dm[0], dm[2]) * 0.5);
         }
         const length = Math.max(40, Math.min(220, spread * 1.1 + 45));
+        const originScreen = project(origin);
+        if (!originScreen) return;
         const axes = [
           { axis: "x", color: "#ff4b4b", vector: [1, 0, 0] },
           { axis: "y", color: "#4dff72", vector: [0, 1, 0] },
           { axis: "z", color: "#4d8dff", vector: [0, 0, 1] }
         ];
-        const originScreen = project(origin);
-        if (!originScreen) return;
-        ctx.lineWidth = 4;
-        for (const info of axes) {
-          const end = [origin[0] + info.vector[0] * length, origin[1] + info.vector[1] * length, origin[2] + info.vector[2] * length];
-          const endScreen = project(end);
-          if (!endScreen) continue;
-          ctx.strokeStyle = info.color;
-          ctx.fillStyle = info.color;
-          ctx.beginPath();
-          ctx.moveTo(originScreen.x, originScreen.y);
-          ctx.lineTo(endScreen.x, endScreen.y);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(endScreen.x, endScreen.y, 8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#07101c";
-          ctx.font = "bold 11px Arial";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText(info.axis.toUpperCase(), endScreen.x, endScreen.y + 0.5);
-          gizmoHandles.push({ ...info, origin, length, originScreen, endScreen });
-        }
 
-        // Yaw rotation ring with a draggable knob at the primary object's facing.
-        const ringRadius = Math.max(spread + 14, 26);
-        ctx.strokeStyle = "rgba(255, 210, 77, 0.85)";
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        let started = false;
-        for (let i = 0; i <= 48; i++) {
-          const a = (i / 48) * Math.PI * 2;
-          const pt = project([origin[0] - Math.sin(a) * ringRadius, origin[1], origin[2] + Math.cos(a) * ringRadius]);
-          if (!pt) { started = false; continue; }
-          if (!started) { ctx.moveTo(pt.x, pt.y); started = true; }
-          else ctx.lineTo(pt.x, pt.y);
-        }
-        ctx.stroke();
-        const eulerNow = Number(objects.get(selectedId)?.euler) || 0;
-        const knobScreen = project([origin[0] - Math.sin(eulerNow) * ringRadius, origin[1], origin[2] + Math.cos(eulerNow) * ringRadius]);
-        if (knobScreen) {
-          ctx.fillStyle = "#ffd24d";
+        if (gizmoMode === "rotate") {
+          // Yaw ring with a knob at the primary object's facing.
+          const ringRadius = Math.max(spread + 14, 26);
+          ctx.strokeStyle = "rgba(255, 210, 77, 0.85)";
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.arc(knobScreen.x, knobScreen.y, 8, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = "#07101c";
-          ctx.font = "bold 11px Arial";
-          ctx.textAlign = "center";
-          ctx.textBaseline = "middle";
-          ctx.fillText("R", knobScreen.x, knobScreen.y + 0.5);
-          gizmoHandles.push({ axis: "yaw", color: "#ffd24d", vector: [0, 1, 0], origin, length: ringRadius, originScreen, endScreen: knobScreen });
+          let started = false;
+          for (let i = 0; i <= 48; i++) {
+            const a = (i / 48) * Math.PI * 2;
+            const pt = project([origin[0] - Math.sin(a) * ringRadius, origin[1], origin[2] + Math.cos(a) * ringRadius]);
+            if (!pt) { started = false; continue; }
+            if (!started) { ctx.moveTo(pt.x, pt.y); started = true; }
+            else ctx.lineTo(pt.x, pt.y);
+          }
+          ctx.stroke();
+          const eulerNow = Number(objects.get(selectedId)?.euler) || 0;
+          const knobScreen = project([origin[0] - Math.sin(eulerNow) * ringRadius, origin[1], origin[2] + Math.cos(eulerNow) * ringRadius]);
+          if (knobScreen) {
+            ctx.fillStyle = "#ffd24d";
+            ctx.beginPath(); ctx.arc(knobScreen.x, knobScreen.y, 8, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = "#07101c"; ctx.font = "bold 11px Arial";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText("R", knobScreen.x, knobScreen.y + 0.5);
+            gizmoHandles.push({ axis: "yaw", color: "#ffd24d", vector: [0, 1, 0], origin, length: ringRadius, originScreen, endScreen: knobScreen });
+          }
+        } else {
+          // Move: arrowheads. Scale: square handles + a uniform-scale label.
+          const scaleMode = gizmoMode === "scale";
+          ctx.lineWidth = 4;
+          for (const info of axes) {
+            const end = [origin[0] + info.vector[0] * length, origin[1] + info.vector[1] * length, origin[2] + info.vector[2] * length];
+            const endScreen = project(end);
+            if (!endScreen) continue;
+            ctx.strokeStyle = info.color; ctx.fillStyle = info.color;
+            ctx.beginPath(); ctx.moveTo(originScreen.x, originScreen.y); ctx.lineTo(endScreen.x, endScreen.y); ctx.stroke();
+            if (scaleMode) {
+              ctx.fillRect(endScreen.x - 7, endScreen.y - 7, 14, 14);
+            } else {
+              ctx.beginPath(); ctx.arc(endScreen.x, endScreen.y, 8, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.fillStyle = "#07101c"; ctx.font = "bold 11px Arial";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText(scaleMode ? "S" : info.axis.toUpperCase(), endScreen.x, endScreen.y + 0.5);
+            gizmoHandles.push({ ...info, origin, length, originScreen, endScreen });
+          }
+          if (scaleMode) {
+            const s = Number(objects.get(selectedId)?.scale?.[0] || 1);
+            ctx.fillStyle = "#cfe6ff"; ctx.font = "bold 12px Arial";
+            ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+            ctx.fillText(`scale ${s.toFixed(2)}×`, originScreen.x, originScreen.y - 12);
+          }
         }
         ctx.textAlign = "left";
         ctx.textBaseline = "alphabetic";
+      }
+
+      function setGizmoMode(mode) {
+        gizmoMode = mode;
+        gizmoMoveBtn.classList.toggle("active", mode === "move");
+        gizmoRotateBtn.classList.toggle("active", mode === "rotate");
+        gizmoScaleBtn.classList.toggle("active", mode === "scale");
       }
 
       function drawHud() {
@@ -1394,7 +1490,7 @@
         projectedObjects.push({ obj, screen, distSq });
         // Constructions with a real model are drawn by renderWorldModels();
         // they stay pickable, and selected ones keep their cube marker.
-        if (!selectedHere && constructionEntryFor(obj)) return true;
+        if (!selectedHere && (constructionEntryFor(obj) || dynMeshReadyFor(obj))) return true;
         entries.push({ obj, center, scale: [w, h, d], color, yaw: Number(obj.euler) || 0, distSq });
         return true;
       }
@@ -1419,6 +1515,7 @@
         renderTerrain();
         renderWorldModels();
         renderTrees();
+        renderGhost();
         if (!entries.length) return;
         const data = new Float32Array(entries.length * 11);
         for (let i = 0; i < entries.length; i++) {
@@ -1445,7 +1542,6 @@
         const entries = buildRenderEntries();
         renderGpu(entries);
         ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-        drawGrid();
         drawGizmo();
         drawPlayers();
         drawHud();
@@ -1507,6 +1603,8 @@
         const obj = objects.get(selectedId);
         selection.hidden = count === 0;
         emptySelection.hidden = count !== 0;
+        // The gizmo toolbar shows whenever the selection has an editable object.
+        gizmoToolbar.hidden = selectedEditableObjects().length === 0;
         if (count === 0) return;
 
         selectionSummary.textContent = count === 1 ? "1 object selected" : `${count} objects selected`;
@@ -1611,8 +1709,8 @@
         pendingBar.hidden = pendingMoves.size === 0;
         pendingText.textContent = `${pendingMoves.size} unsaved move${pendingMoves.size === 1 ? "" : "s"} (local only)`;
       }
-      function recordPendingMove(obj, origPos, origEuler) {
-        if (!pendingMoves.has(obj.id)) pendingMoves.set(obj.id, { pos: origPos, euler: origEuler });
+      function recordPendingMove(obj, origPos, origEuler, origScale) {
+        if (!pendingMoves.has(obj.id)) pendingMoves.set(obj.id, { pos: origPos, euler: origEuler, scale: origScale });
         updatePendingBar();
       }
 
@@ -1666,6 +1764,11 @@
           if (msg.type === "update") mergeObjects(msg.objects);
           if (msg.type === "removed") removeObjects(msg.ids);
           if (msg.type === "players") { players = msg.players || []; playerCount.textContent = players.length; }
+          if (msg.type === "presets") {
+            builder.presets = msg.presets || [];
+            if (builder.chosenPreset && !builder.presets.some((p) => p.name === builder.chosenPreset.name)) { builder.chosenPreset = null; builder.ghost = null; }
+            renderPresetList();
+          }
           if (msg.type === "error") statusEl.textContent = msg.message || "error";
         });
         ws.addEventListener("close", () => {
@@ -1718,6 +1821,485 @@
         return best;
       }
 
+      // ---------- builder mode ----------
+      const builder = { on: false, items: [], chosen: null, ghost: null, yaw: 0, instBuf: null, presets: [], chosenPreset: null };
+
+      // Ray vs terrain. Chunks are 256m squares, so cull by chunk AABB first and
+      // walk them in ray order — only a handful of chunks get triangle-tested.
+      function rayAabb(o, d, minX, maxX, minZ, maxZ, minY, maxY) {
+        let tmin = 0, tmax = 6000;
+        const lo = [minX, minY, minZ], hi = [maxX, maxY, maxZ];
+        for (let i = 0; i < 3; i++) {
+          if (Math.abs(d[i]) < 1e-9) { if (o[i] < lo[i] || o[i] > hi[i]) return null; continue; }
+          let t1 = (lo[i] - o[i]) / d[i], t2 = (hi[i] - o[i]) / d[i];
+          if (t1 > t2) { const t = t1; t1 = t2; t2 = t; }
+          if (t1 > tmin) tmin = t1;
+          if (t2 < tmax) tmax = t2;
+          if (tmin > tmax) return null;
+        }
+        return tmin;
+      }
+
+      function rayTriangle(o, d, ax, ay, az, bx, by, bz, cx, cy, cz) {
+        const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+        const px = d[1] * e2z - d[2] * e2y, py = d[2] * e2x - d[0] * e2z, pz = d[0] * e2y - d[1] * e2x;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (Math.abs(det) < 1e-9) return -1;
+        const inv = 1 / det;
+        const tx = o[0] - ax, ty = o[1] - ay, tz = o[2] - az;
+        const u = (tx * px + ty * py + tz * pz) * inv;
+        if (u < -1e-6 || u > 1 + 1e-6) return -1;
+        const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+        const v = (d[0] * qx + d[1] * qy + d[2] * qz) * inv;
+        if (v < -1e-6 || u + v > 1 + 1e-6) return -1;
+        const t = (e2x * qx + e2y * qy + e2z * qz) * inv;
+        return t > 0.05 ? t : -1;
+      }
+
+      function rayTerrainHit(mx, my) {
+        if (!terrain.loaded || !terrain.positions) return null;
+        const d = screenRayDir(mx, my);
+        const o = [camera.x, camera.y, camera.z];
+        const cands = [];
+        for (const c of terrain.chunks) {
+          if (!c.indexCount) continue;
+          const t = rayAabb(o, d, c.minX, c.maxX, c.minZ, c.maxZ, -50, 500);
+          if (t !== null) cands.push([t, c]);
+        }
+        cands.sort((a, b) => a[0] - b[0]);
+        const pos = terrain.positions, idx = terrain.indices;
+        let best = Infinity;
+        for (const [entry, c] of cands) {
+          if (entry > best) break; // remaining chunks start beyond the current hit
+          const end = c.indexStart + c.indexCount;
+          for (let i = c.indexStart; i < end; i += 3) {
+            const a = idx[i] * 3, b = idx[i + 1] * 3, k = idx[i + 2] * 3;
+            const t = rayTriangle(o, d,
+              pos[a], pos[a + 1], pos[a + 2],
+              pos[b], pos[b + 1], pos[b + 2],
+              pos[k], pos[k + 1], pos[k + 2]);
+            if (t > 0 && t < best) best = t;
+          }
+        }
+        if (!Number.isFinite(best)) return null;
+        return [o[0] + d[0] * best, o[1] + d[1] * best, o[2] + d[2] * best];
+      }
+
+      // ---------- on-demand meshes for arbitrary prop models ----------
+      // Models outside the baked library are fetched from /api/model-mesh and
+      // rendered with their own VAO + per-mesh instance buffer.
+      const dyn = { meshes: new Map(), texByName: new Map() };
+
+      function getDynMesh(modelId) {
+        if (!wm.loaded || !modelId) return { state: "loading", count: 0 };
+        let mesh = dyn.meshes.get(modelId);
+        if (mesh) return mesh;
+        mesh = { state: "loading", raw: null, vao: null, instBuf: null, indexCount: 0, texName: "", count: 0 };
+        dyn.meshes.set(modelId, mesh);
+        fetch(`/api/model-mesh/${modelId}`, { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("no mesh"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const view = new DataView(buf);
+            if (String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3)) !== "MSH1") throw new Error("bad mesh");
+            const headerLen = view.getUint32(4, true);
+            const header = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, headerLen)));
+            let off = 8 + headerLen;
+            const vc = view.getUint32(off, true), ic = view.getUint32(off + 4, true); off += 8;
+            const verts = new Float32Array(buf, off, vc * 5); off += vc * 20;
+            const indices = new Uint32Array(buf, off, ic);
+            mesh.raw = { verts, indices };
+            mesh.texName = header.texture || "";
+            mesh.vao = gl.createVertexArray();
+            gl.bindVertexArray(mesh.vao);
+            const vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
+            const locPos = gl.getAttribLocation(wm.program, "aPos");
+            gl.enableVertexAttribArray(locPos);
+            gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 20, 0);
+            const locUV = gl.getAttribLocation(wm.program, "aUV");
+            gl.enableVertexAttribArray(locUV);
+            gl.vertexAttribPointer(locUV, 2, gl.FLOAT, false, 20, 12);
+            mesh.instBuf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, mesh.instBuf);
+            gl.enableVertexAttribArray(wm.locIPos);
+            gl.enableVertexAttribArray(wm.locIYS);
+            gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+            gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+            gl.vertexAttribDivisor(wm.locIPos, 1);
+            gl.vertexAttribDivisor(wm.locIYS, 1);
+            const ibo = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+            gl.bindVertexArray(null);
+            mesh.indexCount = ic;
+            mesh.state = "ready";
+            objectsRev++; // placed props can now swap from cube markers to meshes
+            previewMaybeReady(modelId);
+          })
+          .catch(() => { mesh.state = "failed"; });
+        return mesh;
+      }
+
+      function dynMeshReadyFor(obj) {
+        if (!wm.loaded || !isConstructionKind(obj.kind)) return null;
+        if (wm.constructionModels[obj.modelId] !== undefined) return null; // static library covers it
+        const mesh = getDynMesh(obj.modelId);
+        return mesh.state === "ready" ? mesh : null;
+      }
+
+      function dynTexture(texName) {
+        if (!texName) return null;
+        const cached = dyn.texByName.get(texName);
+        if (cached !== undefined) return cached;
+        dyn.texByName.set(texName, null);
+        const s3tc = gl.getExtension("WEBGL_compressed_texture_s3tc");
+        if (!s3tc) return null;
+        fetch(`/api/model-texture/${encodeURIComponent(texName)}`, { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => { if (!r.ok) throw new Error("missing"); return r.arrayBuffer(); })
+          .then((buf) => {
+            const dds = parseDDS(buf);
+            if (!dds) return;
+            const tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            const fmt = dds.format === "rgba" ? s3tc.COMPRESSED_RGBA_S3TC_DXT5_EXT : s3tc.COMPRESSED_RGB_S3TC_DXT1_EXT;
+            for (let m = 0; m < dds.levels.length; m++) {
+              const lvl = dds.levels[m];
+              gl.compressedTexImage2D(gl.TEXTURE_2D, m, fmt, lvl.width, lvl.height, 0, lvl.data);
+            }
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, dds.levels.length > 1 ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+            dyn.texByName.set(texName, tex);
+          })
+          .catch(() => {});
+        return null;
+      }
+
+      // ---------- model preview window ----------
+      const preview = { gl: null, canvas: null, prog: null, uni: null, vao: null, indexCount: 0, bbox: null, tex: null, hasTex: false, modelId: 0, raf: 0 };
+      const norm3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / l, v[1] / l, v[2] / l]; };
+      const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      function mul4(a, b) {
+        const out = new Array(16);
+        for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+          out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+        }
+        return out;
+      }
+
+      function previewInit() {
+        if (preview.gl) return true;
+        preview.canvas = document.getElementById("preview-canvas");
+        const pgl = preview.canvas.getContext("webgl2", { antialias: true });
+        if (!pgl) return false;
+        preview.gl = pgl;
+        const vs = `#version 300 es
+          precision highp float;
+          in vec3 aPos; in vec2 aUV;
+          uniform mat4 uMvp;
+          out vec3 vPos; out vec2 vUV;
+          void main() { vPos = aPos; vUV = aUV; gl_Position = uMvp * vec4(aPos, 1.0); }`;
+        const fsrc = `#version 300 es
+          precision mediump float;
+          in vec3 vPos; in vec2 vUV;
+          uniform sampler2D uTex; uniform bool uHasTex;
+          out vec4 outColor;
+          void main() {
+            vec3 n = normalize(cross(dFdx(vPos), dFdy(vPos)));
+            float light = abs(dot(n, normalize(vec3(0.5, 0.8, 0.35))));
+            vec3 base = uHasTex ? texture(uTex, vUV).rgb : vec3(0.62, 0.66, 0.72);
+            outColor = vec4(base * (0.45 + 0.6 * light), 1.0);
+          }`;
+        preview.prog = linkProgram(pgl, vs, fsrc);
+        preview.uni = {
+          mvp: pgl.getUniformLocation(preview.prog, "uMvp"),
+          tex: pgl.getUniformLocation(preview.prog, "uTex"),
+          hasTex: pgl.getUniformLocation(preview.prog, "uHasTex"),
+        };
+        pgl.enable(pgl.DEPTH_TEST);
+        return true;
+      }
+
+      function showPreview(modelId) {
+        preview.modelId = Number(modelId) || 0;
+        const canvasEl = document.getElementById("preview-canvas");
+        if (!preview.modelId) {
+          canvasEl.style.display = "none";
+          if (preview.raf) { cancelAnimationFrame(preview.raf); preview.raf = 0; }
+          return;
+        }
+        canvasEl.style.display = "block";
+        if (!previewInit()) return;
+        preview.indexCount = 0;
+        preview.hasTex = false;
+        const mesh = getDynMesh(preview.modelId);
+        if (mesh.state === "ready") previewBuild(mesh);
+        if (!preview.raf) preview.raf = requestAnimationFrame(previewFrame);
+      }
+
+      function previewMaybeReady(modelId) {
+        if (preview.modelId !== modelId || !preview.gl) return;
+        const mesh = dyn.meshes.get(modelId);
+        if (mesh && mesh.state === "ready") previewBuild(mesh);
+      }
+
+      function previewBuild(mesh) {
+        const pgl = preview.gl;
+        if (preview.vao) pgl.deleteVertexArray(preview.vao);
+        preview.vao = pgl.createVertexArray();
+        pgl.bindVertexArray(preview.vao);
+        const vbo = pgl.createBuffer();
+        pgl.bindBuffer(pgl.ARRAY_BUFFER, vbo);
+        pgl.bufferData(pgl.ARRAY_BUFFER, mesh.raw.verts, pgl.STATIC_DRAW);
+        const locPos = pgl.getAttribLocation(preview.prog, "aPos");
+        pgl.enableVertexAttribArray(locPos);
+        pgl.vertexAttribPointer(locPos, 3, pgl.FLOAT, false, 20, 0);
+        const locUV = pgl.getAttribLocation(preview.prog, "aUV");
+        pgl.enableVertexAttribArray(locUV);
+        pgl.vertexAttribPointer(locUV, 2, pgl.FLOAT, false, 20, 12);
+        const ibo = pgl.createBuffer();
+        pgl.bindBuffer(pgl.ELEMENT_ARRAY_BUFFER, ibo);
+        pgl.bufferData(pgl.ELEMENT_ARRAY_BUFFER, mesh.raw.indices, pgl.STATIC_DRAW);
+        pgl.bindVertexArray(null);
+        preview.indexCount = mesh.raw.indices.length;
+        let mnx = 1e9, mny = 1e9, mnz = 1e9, mxx = -1e9, mxy = -1e9, mxz = -1e9;
+        const v = mesh.raw.verts;
+        for (let i = 0; i < v.length; i += 5) {
+          if (v[i] < mnx) mnx = v[i]; if (v[i] > mxx) mxx = v[i];
+          if (v[i + 1] < mny) mny = v[i + 1]; if (v[i + 1] > mxy) mxy = v[i + 1];
+          if (v[i + 2] < mnz) mnz = v[i + 2]; if (v[i + 2] > mxz) mxz = v[i + 2];
+        }
+        preview.bbox = [[mnx, mny, mnz], [mxx, mxy, mxz]];
+        preview.tex = null;
+        preview.hasTex = false;
+        if (mesh.texName) {
+          fetch(`/api/model-texture/${encodeURIComponent(mesh.texName)}`, { headers: { Authorization: `Bearer ${token}` } })
+            .then((r) => { if (!r.ok) throw new Error("missing"); return r.arrayBuffer(); })
+            .then((buf) => {
+              const dds = parseDDS(buf);
+              const s3tc = pgl.getExtension("WEBGL_compressed_texture_s3tc");
+              if (!dds || !s3tc) return;
+              const tex = pgl.createTexture();
+              pgl.bindTexture(pgl.TEXTURE_2D, tex);
+              const fmt = dds.format === "rgba" ? s3tc.COMPRESSED_RGBA_S3TC_DXT5_EXT : s3tc.COMPRESSED_RGB_S3TC_DXT1_EXT;
+              for (let m = 0; m < dds.levels.length; m++) {
+                const lvl = dds.levels[m];
+                pgl.compressedTexImage2D(pgl.TEXTURE_2D, m, fmt, lvl.width, lvl.height, 0, lvl.data);
+              }
+              pgl.texParameteri(pgl.TEXTURE_2D, pgl.TEXTURE_MIN_FILTER, dds.levels.length > 1 ? pgl.LINEAR_MIPMAP_LINEAR : pgl.LINEAR);
+              pgl.texParameteri(pgl.TEXTURE_2D, pgl.TEXTURE_MAG_FILTER, pgl.LINEAR);
+              pgl.texParameteri(pgl.TEXTURE_2D, pgl.TEXTURE_WRAP_S, pgl.REPEAT);
+              pgl.texParameteri(pgl.TEXTURE_2D, pgl.TEXTURE_WRAP_T, pgl.REPEAT);
+              preview.tex = tex;
+              preview.hasTex = true;
+            })
+            .catch(() => {});
+        }
+      }
+
+      function previewFrame(t) {
+        preview.raf = requestAnimationFrame(previewFrame);
+        const pgl = preview.gl;
+        if (!pgl) return;
+        pgl.viewport(0, 0, preview.canvas.width, preview.canvas.height);
+        pgl.clearColor(0.04, 0.06, 0.09, 1);
+        pgl.clear(pgl.COLOR_BUFFER_BIT | pgl.DEPTH_BUFFER_BIT);
+        if (!preview.indexCount || !preview.bbox) return;
+        const [mn, mx] = preview.bbox;
+        const cx = (mn[0] + mx[0]) / 2, cyc = (mn[1] + mx[1]) / 2, cz = (mn[2] + mx[2]) / 2;
+        const r = Math.max(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]) * 0.5 || 1;
+        const ang = t * 0.0006;
+        const dist = r * 2.8;
+        const ex = cx + Math.sin(ang) * dist, ey = cyc + r * 0.9, ez = cz + Math.cos(ang) * dist;
+        const fz = norm3([cx - ex, cyc - ey, cz - ez]);
+        const fx = norm3(cross3(fz, [0, 1, 0]));
+        const fy = cross3(fx, fz);
+        const view = [
+          fx[0], fy[0], -fz[0], 0,
+          fx[1], fy[1], -fz[1], 0,
+          fx[2], fy[2], -fz[2], 0,
+          -(fx[0] * ex + fx[1] * ey + fx[2] * ez), -(fy[0] * ex + fy[1] * ey + fy[2] * ez), (fz[0] * ex + fz[1] * ey + fz[2] * ez), 1,
+        ];
+        const near = Math.max(0.01, dist - r * 3), far = dist + r * 3;
+        const aspect = preview.canvas.width / preview.canvas.height;
+        const f = 1 / Math.tan(0.45);
+        const proj = [
+          f / aspect, 0, 0, 0,
+          0, f, 0, 0,
+          0, 0, (far + near) / (near - far), -1,
+          0, 0, (2 * far * near) / (near - far), 0,
+        ];
+        pgl.useProgram(preview.prog);
+        pgl.bindVertexArray(preview.vao);
+        pgl.uniformMatrix4fv(preview.uni.mvp, false, new Float32Array(mul4(proj, view)));
+        pgl.uniform1i(preview.uni.tex, 0);
+        pgl.uniform1i(preview.uni.hasTex, preview.hasTex ? 1 : 0);
+        if (preview.hasTex) { pgl.activeTexture(pgl.TEXTURE0); pgl.bindTexture(pgl.TEXTURE_2D, preview.tex); }
+        pgl.drawElements(pgl.TRIANGLES, preview.indexCount, pgl.UNSIGNED_INT, 0);
+        pgl.bindVertexArray(null);
+      }
+
+      function loadPlaceables() {
+        fetch("/api/placeables", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => r.json())
+          .then((data) => {
+            // Construction items (with game item ids) + every prop model from
+            // Models.json. Unified entries keyed so both kinds are selectable.
+            builder.items = (data.items || []).map((it) => ({ key: `i${it.itemDefId}`, itemDefId: it.itemDefId, modelId: it.modelId, name: it.name, tag: it.kind }));
+            const known = new Set(builder.items.map((it) => it.modelId));
+            for (const m of data.models || []) {
+              if (known.has(m.modelId)) continue;
+              builder.items.push({ key: `m${m.modelId}`, itemDefId: 0, modelId: m.modelId, name: m.name, tag: "prop" });
+            }
+            renderBuilderList();
+            console.log(`[builder] ${builder.items.length} placeable entries (${(data.models || []).length} prop models)`);
+          })
+          .catch((e) => console.log(`[builder] catalog unavailable: ${e.message}`));
+      }
+
+      function renderBuilderList() {
+        const q = builderSearch.value.trim().toLowerCase();
+        const matches = builder.items.filter((it) => !q || it.name.toLowerCase().includes(q) || String(it.itemDefId) === q || String(it.modelId) === q);
+        const rows = matches.slice(0, 250)
+          .map((it) => `<button class="object-row ${builder.chosen && builder.chosen.key === it.key ? "active" : ""}" data-item="${it.key}">${it.name}<br><span class="muted">${it.tag}${it.itemDefId ? " · item " + it.itemDefId : ""} · model ${it.modelId}</span></button>`);
+        if (matches.length > 250) rows.push(`<div class="muted" style="padding:8px">…${matches.length - 250} more — refine the filter.</div>`);
+        builderList.innerHTML = rows.join("") || '<div class="muted" style="padding:10px">No matching items.</div>';
+      }
+
+      function setBuilderMode(on) {
+        builder.on = on;
+        builderToggle.checked = on;
+        builderPanel.hidden = !on;
+        if (!on) { builder.chosen = null; builder.chosenPreset = null; builder.ghost = null; builderChosen.textContent = "No item selected."; renderPresetList(); showPreview(0); }
+        renderBuilderList();
+      }
+
+      function choosePlaceable(key) {
+        const it = key ? builder.items.find((x) => x.key === key) : null;
+        builder.chosen = it || null;
+        builder.chosenPreset = null;
+        builder.ghost = null;
+        builderChosen.innerHTML = it ? `Placing: <b style="color:#65df99">${it.name}</b>` : "No item selected.";
+        renderBuilderList();
+        renderPresetList();
+        showPreview(it ? it.modelId : 0);
+      }
+
+      function builderHasChoice() { return Boolean(builder.chosen || builder.chosenPreset); }
+
+      function placeChosen(mx, my) {
+        if (!builderHasChoice()) return;
+        const hit = rayTerrainHit(mx, my);
+        if (!hit || !(ws && ws.readyState === WebSocket.OPEN)) return;
+        if (builder.chosenPreset) {
+          ws.send(JSON.stringify({ type: "spawnPreset", name: builder.chosenPreset.name, pos: hit, euler: builder.yaw }));
+        } else {
+          ws.send(JSON.stringify({ type: "place", itemDefinitionId: builder.chosen.itemDefId, modelId: builder.chosen.modelId, pos: hit, euler: builder.yaw }));
+        }
+      }
+
+      // ---------- presets ----------
+      function loadPresets() {
+        fetch("/api/presets", { headers: { Authorization: `Bearer ${token}` } })
+          .then((r) => r.json())
+          .then((d) => { builder.presets = d.presets || []; renderPresetList(); })
+          .catch(() => {});
+      }
+      function renderPresetList() {
+        if (!builder.presets.length) { presetListEl.innerHTML = '<div class="muted" style="padding:6px">No presets saved yet.</div>'; return; }
+        presetListEl.innerHTML = builder.presets.map((p) => {
+          const active = builder.chosenPreset && builder.chosenPreset.name === p.name;
+          return `<div style="display:flex;gap:6px;align-items:center;justify-content:space-between;padding:6px 8px;border:1px solid ${active ? "#5fb3ff" : "#23334a"};border-radius:8px;margin-bottom:6px">
+            <span>${p.name} <span class="muted">${p.objects.length} obj</span></span>
+            <span style="display:flex;gap:6px"><button data-spawn="${p.name}">Spawn</button><button class="danger" data-del="${p.name}">✕</button></span>
+          </div>`;
+        }).join("");
+      }
+      function saveSelectionAsPreset() {
+        const objs = selectedEditableObjects().filter((o) => o.modelId); // props (itemDefId 0) allowed
+        const name = presetName.value.trim();
+        if (!objs.length) { builderChosen.innerHTML = '<span style="color:#ff8787">Select some placed constructions first.</span>'; return; }
+        if (!name) { presetName.focus(); return; }
+        let ax = 0, az = 0, minY = Infinity;
+        for (const o of objs) { ax += o.pos[0]; az += o.pos[2]; minY = Math.min(minY, o.pos[1]); }
+        ax /= objs.length; az /= objs.length;
+        const objects = objs.map((o) => ({
+          itemDefinitionId: o.itemDefId || 0, modelId: o.modelId,
+          rel: [o.pos[0] - ax, o.pos[1] - minY, o.pos[2] - az],
+          euler: Number(o.euler) || 0, scale: Number(o.scale?.[0] || 1),
+        }));
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "savePreset", name, objects }));
+      }
+      function choosePreset(name) {
+        const p = builder.presets.find((x) => x.name === name);
+        builder.chosenPreset = p || null;
+        builder.chosen = null;
+        builder.ghost = null;
+        if (p) { setBuilderMode(true); builderChosen.innerHTML = `Placing preset: <b style="color:#65df99">${p.name}</b> (${p.objects.length} obj)`; }
+        renderBuilderList();
+        renderPresetList();
+        showPreview(0);
+      }
+
+      // Green ghost preview: a single item, or every object of a preset laid out
+      // around the cursor. Reuses the world-model program, one instance per part.
+      function ghostParts() {
+        if (builder.chosenPreset) {
+          const cos = Math.cos(builder.yaw), sin = Math.sin(builder.yaw);
+          return builder.chosenPreset.objects.map((o) => {
+            const wx = builder.ghost[0] + cos * o.rel[0] + sin * o.rel[2];
+            const wz = builder.ghost[2] - sin * o.rel[0] + cos * o.rel[2];
+            return { modelId: o.modelId, pos: [wx, builder.ghost[1] + o.rel[1], wz], euler: (Number(o.euler) || 0) + builder.yaw, scale: Number(o.scale) || 1 };
+          });
+        }
+        if (builder.chosen) return [{ modelId: builder.chosen.modelId, pos: builder.ghost, euler: builder.yaw, scale: 1 }];
+        return [];
+      }
+
+      function renderGhost() {
+        if (!builder.on || !builder.ghost || !wm.loaded || !builderHasChoice()) return;
+        const parts = ghostParts();
+        if (!parts.length) return;
+        if (!builder.instBuf) builder.instBuf = gl.createBuffer();
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(wm.program);
+        gl.bindVertexArray(wm.vao);
+        gl.uniform3f(wm.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(wm.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(wm.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(wm.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform1i(wm.uniforms.hasTex, 0);
+        gl.uniform3f(wm.uniforms.color, 0.35, 1.0, 0.55);
+        for (const part of parts) {
+          const idx = wm.constructionModels[part.modelId];
+          const entry = idx === undefined ? null : wm.entries[idx];
+          const data = new Float32Array([part.pos[0], part.pos[1], part.pos[2], -part.euler, part.scale]);
+          if (entry && entry.hasModel) {
+            gl.bindVertexArray(wm.vao);
+            gl.bindBuffer(gl.ARRAY_BUFFER, builder.instBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+            gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+            gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+            gl.drawElementsInstanced(gl.TRIANGLES, entry.indexCount, gl.UNSIGNED_INT, entry.indexStart * 4, 1);
+          } else {
+            // Arbitrary prop model — fetched on demand.
+            const mesh = getDynMesh(part.modelId);
+            if (mesh.state !== "ready") continue;
+            gl.bindVertexArray(mesh.vao);
+            gl.bindBuffer(gl.ARRAY_BUFFER, builder.instBuf);
+            gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+            gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+            gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+            gl.drawElementsInstanced(gl.TRIANGLES, mesh.indexCount, gl.UNSIGNED_INT, 0, 1);
+          }
+        }
+        gl.bindVertexArray(null);
+        gl.enable(gl.CULL_FACE);
+      }
+
       function pick(clientX, clientY) {
         const rayHit = pickByRay(clientX, clientY);
         if (rayHit) return rayHit;
@@ -1748,13 +2330,13 @@
             const sx = handle.endScreen.x - handle.originScreen.x;
             const sy = handle.endScreen.y - handle.originScreen.y;
             const screenLength = Math.max(1, Math.hypot(sx, sy));
-            const group = groupObjs.map((o) => ({ obj: o, startPos: o.pos.slice(), startEuler: Number(o.euler) || 0 }));
+            const group = groupObjs.map((o) => ({ obj: o, startPos: o.pos.slice(), startEuler: Number(o.euler) || 0, startScale: Number(o.scale?.[0]) || 1 }));
             let startAngle = 0;
             if (handle.axis === "yaw") {
               const w0 = mouseToPlane(event.clientX, event.clientY, handle.origin[1]);
               if (w0) startAngle = Math.atan2(-(w0[0] - handle.origin[0]), w0[2] - handle.origin[2]);
             }
-            activeGizmo = { handle, startMouse: [event.clientX, event.clientY], screenUnit: [sx / screenLength, sy / screenLength], screenLength, group, startAngle };
+            activeGizmo = { handle, mode: gizmoMode, startMouse: [event.clientX, event.clientY], screenUnit: [sx / screenLength, sy / screenLength], screenLength, group, startAngle };
             canvas.setPointerCapture(event.pointerId);
             return;
           }
@@ -1777,7 +2359,7 @@
       canvas.addEventListener("pointermove", (event) => {
         if (activeGizmo) {
           if (!activeGizmo.group.length) return;
-          if (activeGizmo.handle.axis === "yaw") {
+          if (activeGizmo.mode === "rotate") {
             // Rotate the whole group around the gizmo center, and turn each object.
             const center = activeGizmo.handle.origin;
             const world = mouseToPlane(event.clientX, event.clientY, center[1]);
@@ -1792,22 +2374,39 @@
               }
             }
           } else {
-            // Translate every selected object by the same world delta.
             const dx = event.clientX - activeGizmo.startMouse[0];
             const dy = event.clientY - activeGizmo.startMouse[1];
             const screenDelta = dx * activeGizmo.screenUnit[0] + dy * activeGizmo.screenUnit[1];
             const worldDelta = (screenDelta / activeGizmo.screenLength) * activeGizmo.handle.length;
-            const v = activeGizmo.handle.vector;
-            for (const g of activeGizmo.group) {
-              g.obj.pos = [g.startPos[0] + v[0] * worldDelta, g.startPos[1] + v[1] * worldDelta, g.startPos[2] + v[2] * worldDelta];
+            if (activeGizmo.mode === "scale") {
+              // Uniform scale: drag a handle out to its length = 2x, in = smaller.
+              const factor = Math.max(0.05, 1 + worldDelta / activeGizmo.handle.length);
+              for (const g of activeGizmo.group) {
+                const ns = Math.max(0.05, g.startScale * factor);
+                g.obj.scale = [ns, ns, ns];
+              }
+            } else {
+              // Translate every selected object by the same world delta.
+              const v = activeGizmo.handle.vector;
+              for (const g of activeGizmo.group) {
+                g.obj.pos = [g.startPos[0] + v[0] * worldDelta, g.startPos[1] + v[1] * worldDelta, g.startPos[2] + v[2] * worldDelta];
+              }
             }
           }
           const primary = objects.get(selectedId);
           if (primary) {
             updateSelectionFields(primary);
             fields.yaw.value = ((Number(primary.euler) || 0) * 180 / Math.PI).toFixed(2);
+            fields.scale.value = Number(primary.scale?.[0] || 1).toFixed(3);
           }
           return;
+        }
+        if (builder.on && builderHasChoice() && !rightLook) {
+          const now = performance.now();
+          if (now - lastGhostUpdate > 40) { // raycast is cheap but not free
+            lastGhostUpdate = now;
+            builder.ghost = rayTerrainHit(event.clientX, event.clientY);
+          }
         }
         if (!rightLook) return;
         // Use raw movement deltas so look works under pointer lock (clientX is
@@ -1820,7 +2419,7 @@
 
       canvas.addEventListener("pointerup", (event) => {
         if (activeGizmo) {
-          for (const g of activeGizmo.group) recordPendingMove(g.obj, g.startPos, g.startEuler);
+          for (const g of activeGizmo.group) recordPendingMove(g.obj, g.startPos, g.startEuler, [g.startScale, g.startScale, g.startScale]);
           activeGizmo = null;
           return;
         }
@@ -1833,6 +2432,7 @@
         const moved = dragStart ? Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) : 999;
         dragStart = null;
         if (event.button === 0 && moved < 5) {
+          if (builder.on && builderHasChoice()) { placeChosen(event.clientX, event.clientY); return; }
           const hit = pick(event.clientX, event.clientY);
           if (hit) setSelected(hit.id, event.shiftKey);
           else if (!event.shiftKey) setSelected(""); // click empty space clears
@@ -1874,6 +2474,48 @@
       window.addEventListener("keyup", (event) => keys.delete(event.key.toLowerCase()));
       window.addEventListener("resize", resize);
 
+      let lastGhostUpdate = 0;
+      window.addEventListener("keydown", (event) => {
+        if (event.target && /^(input|textarea|select)$/i.test(event.target.tagName)) return; // typing
+        const k = event.key.toLowerCase();
+        if (k === "b") { setBuilderMode(!builder.on); return; }
+        if (builder.on && builderHasChoice()) {
+          if (k === "r") { builder.yaw += Math.PI / 12; return; }
+          if (k === "f") { builder.yaw -= Math.PI / 12; return; }
+          if (k === "escape") { builder.chosen = null; builder.chosenPreset = null; builder.ghost = null; builderChosen.textContent = "No item selected."; renderBuilderList(); renderPresetList(); showPreview(0); return; }
+        }
+        // Gizmo mode switch (1 move, 2 rotate, 3 scale) when something's selected.
+        if (selectedEditableObjects().length) {
+          if (k === "1") { setGizmoMode("move"); return; }
+          if (k === "2") { setGizmoMode("rotate"); return; }
+          if (k === "3") { setGizmoMode("scale"); return; }
+        }
+        if (k === "delete" && selectedIds.size) {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            for (const id of selectedIds) ws.send(JSON.stringify({ type: "delete", id }));
+          }
+          setSelected("");
+        }
+      });
+
+      gizmoMoveBtn.addEventListener("click", () => setGizmoMode("move"));
+      gizmoRotateBtn.addEventListener("click", () => setGizmoMode("rotate"));
+      gizmoScaleBtn.addEventListener("click", () => setGizmoMode("scale"));
+      builderToggle.addEventListener("change", () => setBuilderMode(builderToggle.checked));
+      builderSearch.addEventListener("input", renderBuilderList);
+      builderList.addEventListener("click", (event) => {
+        const row = event.target.closest("[data-item]");
+        if (row) choosePlaceable(row.dataset.item);
+      });
+      presetSaveBtn.addEventListener("click", saveSelectionAsPreset);
+      presetName.addEventListener("keydown", (e) => { if (e.key === "Enter") saveSelectionAsPreset(); });
+      presetListEl.addEventListener("click", (event) => {
+        const spawn = event.target.closest("[data-spawn]");
+        if (spawn) { choosePreset(spawn.dataset.spawn); return; }
+        const del = event.target.closest("[data-del]");
+        if (del && ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "deletePreset", name: del.dataset.del }));
+      });
+
       document.getElementById("apply").addEventListener("click", () => {
         const obj = objects.get(selectedId);
         if (!isEditable(obj)) return;
@@ -1886,9 +2528,16 @@
         updatePendingBar();
       });
       document.getElementById("pending-apply").addEventListener("click", () => {
+        // Send the whole selection in ONE batch so the server can apply it
+        // atomically. Sending one message per object let a foundation re-drag a
+        // wall that had already moved, applying the delta to it twice.
+        const items = [];
         for (const id of pendingMoves.keys()) {
           const obj = objects.get(id);
-          if (obj) sendTransform(obj, true);
+          if (obj && obj.source !== "zoneData") items.push({ id: obj.id, pos: obj.pos, euler: obj.euler, scale: obj.scale });
+        }
+        if (items.length && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "transformBatch", items, final: true }));
         }
         pendingMoves.clear();
         updatePendingBar();
@@ -1899,6 +2548,7 @@
           if (obj) {
             obj.pos = orig.pos.slice();
             obj.euler = orig.euler;
+            if (orig.scale) obj.scale = orig.scale.slice();
           }
         }
         pendingMoves.clear();
@@ -1938,6 +2588,8 @@
       loadWorldObjects();
       loadWorldModels();
       loadSpeedTrees();
+      loadPlaceables();
+      loadPresets();
       connect();
       requestAnimationFrame(loop);
     })();
