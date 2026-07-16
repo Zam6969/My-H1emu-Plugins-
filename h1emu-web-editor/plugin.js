@@ -44,6 +44,15 @@ const MAX_LOGIN_FAILURES = 5;
 const BODY_LIMIT_BYTES = 10 * 1024;
 const SCAN_INTERVAL_MS = 500;
 const PLAYER_INTERVAL_MS = 1000;
+// Synthetic model-id base for .adr in the asset dump that have no game modelId
+// (roads, city structures, etc.). Well above real ids (<~12000) so they never
+// collide; uint32 in the AddSimpleNpc packet leaves plenty of room. Assigned ids
+// are persisted (extra-model-ids.json) so placed entities stay stable across
+// restarts. NOTE: a stock game client can't render these — its model table has
+// no entry for the id — so they appear in the editor and exist as real server
+// entities, but are invisible in-game unless the client's Models.txt is extended
+// with matching ids.
+const EXTRA_MODEL_ID_BASE = 500000;
 
 const ITEM_NAME_BY_ID = Object.fromEntries(Object.entries(enums.Items).filter(([, value]) => typeof value === "number").map(([key, value]) => [value, key]));
 const MODEL_NAME_BY_ID = Object.fromEntries(Object.entries(enums.ModelIds || {}).filter(([, value]) => typeof value === "number").map(([key, value]) => [value, key]));
@@ -1227,11 +1236,33 @@ class H1emuWebEditorPlugin extends BasePlugin {
     return this._placeables;
   }
 
-  // Every model from Models.json whose .adr exists in the assets dump — these
-  // are placeable as decorative props (simple constructions with no item id).
+  // Stable name->id map for dump .adr that Models.json doesn't cover.
+  extraModelIdsFile() { return path.join(this.dir || __dirname, "extra-model-ids.json"); }
+  loadExtraModelIds() {
+    try {
+      const data = JSON.parse(fs.readFileSync(this.extraModelIdsFile(), "utf8"));
+      return data && typeof data === "object" ? data : {};
+    } catch (_) { return {}; }
+  }
+  saveExtraModelIds(map) {
+    try {
+      const f = this.extraModelIdsFile();
+      fs.writeFileSync(`${f}.tmp`, JSON.stringify(map));
+      fs.renameSync(`${f}.tmp`, f);
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Could not persist extra model ids: ${err.message}`);
+    }
+  }
+
+  // Placeable model catalog: every Models.json model whose .adr exists in the
+  // dump (real game ids), plus every other .adr in the dump under a synthetic
+  // id (see EXTRA_MODEL_ID_BASE). Also builds _extraFileById (synthetic id ->
+  // file) so meshes/placement resolve. Cached.
   modelsCatalog() {
     if (this._modelsCatalog) return this._modelsCatalog;
     const out = [];
+    const seen = new Set(); // lowercased .adr filenames already in the catalog
+    this._extraFileById = new Map();
     try {
       const models = JSON.parse(fs.readFileSync(path.join(h1z1ServerRoot, "data", "2016", "dataSources", "Models.json"), "utf8"));
       for (const m of models) {
@@ -1241,17 +1272,46 @@ class H1emuWebEditorPlugin extends BasePlugin {
         const name = file.replace(/\.adr$/i, "");
         out.push({ modelId: Number(m.ID), name, desc: String(m.DESCRIPTION || "") });
         if (!MODEL_NAME_BY_ID[m.ID]) MODEL_NAME_BY_ID[m.ID] = name;
+        seen.add(file.toLowerCase());
       }
     } catch (err) {
       console.warn(`[h1emu-web-editor] Could not build models catalog: ${err.message}`);
     }
+    // Every remaining .adr in the dump gets a stable synthetic id.
+    let extra = 0;
+    try {
+      const idMap = this.loadExtraModelIds();
+      let nextId = EXTRA_MODEL_ID_BASE;
+      for (const id of Object.values(idMap)) if (Number(id) >= nextId) nextId = Number(id) + 1;
+      let changed = false;
+      // Sorted so first-time id assignment is deterministic/reproducible — the
+      // exported client model table (export-client-models.js) must agree.
+      const dumpAdr = fs.readdirSync(this.config.assetsDir)
+        .filter((f) => f.toLowerCase().endsWith(".adr") && !seen.has(f.toLowerCase()))
+        .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      for (const file of dumpAdr) {
+        const name = file.replace(/\.adr$/i, "");
+        const key = file.toLowerCase();
+        let id = Number(idMap[key]);
+        if (!id) { id = nextId++; idMap[key] = id; changed = true; }
+        out.push({ modelId: id, name, desc: "", extra: true });
+        if (!MODEL_NAME_BY_ID[id]) MODEL_NAME_BY_ID[id] = name;
+        this._extraFileById.set(id, file);
+        seen.add(key);
+        extra++;
+      }
+      if (changed) this.saveExtraModelIds(idMap);
+    } catch (err) {
+      console.warn(`[h1emu-web-editor] Could not scan dump for extra models: ${err.message}`);
+    }
     out.sort((a, b) => a.name.localeCompare(b.name));
     this._modelsCatalog = out;
-    console.log(`[h1emu-web-editor] Models catalog: ${out.length} placeable models from Models.json.`);
+    console.log(`[h1emu-web-editor] Models catalog: ${out.length} placeable models (${extra} extra dump models with synthetic ids).`);
     return out;
   }
 
   modelFileById(modelId) {
+    const id = Number(modelId);
     if (!this._modelFileById) {
       this._modelFileById = new Map();
       try {
@@ -1259,7 +1319,10 @@ class H1emuWebEditorPlugin extends BasePlugin {
         for (const m of models) this._modelFileById.set(Number(m.ID), String(m.MODEL_FILE_NAME || ""));
       } catch (_) {}
     }
-    return this._modelFileById.get(Number(modelId)) || null;
+    if (this._modelFileById.has(id)) return this._modelFileById.get(id);
+    // Synthetic-id models live in _extraFileById, filled by modelsCatalog().
+    if (!this._extraFileById) this.modelsCatalog();
+    return (this._extraFileById && this._extraFileById.get(id)) || null;
   }
 
   // On-demand mesh for any model id: parse the .adr/.dme (full detail) and cache.

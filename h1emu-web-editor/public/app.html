@@ -106,6 +106,7 @@
     <h2>World Objects</h2>
     <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="world-toggle" type="checkbox" checked style="width:auto;margin:0"> Show streets, houses &amp; decor</label>
     <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="trees-toggle" type="checkbox" checked style="width:auto;margin:0"> Show trees</label>
+    <label style="display:flex;gap:8px;align-items:center;cursor:pointer"><input id="cubes-toggle" type="checkbox" checked style="width:auto;margin:0"> Show marker cubes</label>
     <label for="world-distance">World draw distance <span id="world-distance-value" class="muted">1200 m</span></label>
     <input id="world-distance" type="range" min="200" max="4000" step="100" value="1200" style="padding:0">
     <h2>Filters</h2>
@@ -113,7 +114,7 @@
     <label for="search">Search</label>
     <input id="search" type="search" placeholder="id, name, kind, item/model id">
     <h2>Selected</h2>
-    <div id="empty-selection" class="muted">Click a construction to select it. Hold Shift and click to select several at once.</div>
+    <div id="empty-selection" class="muted">Click a construction to select it. Hold Shift and click to select several, or drag a box over objects to select everything inside.</div>
     <div id="selection" hidden>
       <div id="selection-summary" style="margin-bottom:8px; font-weight:700; color:#ffd24d"></div>
       <div id="selection-list" style="display:none; max-height:130px; overflow:auto; border:1px solid #23334a; border-radius:8px; margin-bottom:8px"></div>
@@ -176,6 +177,7 @@
       const worldDistance = document.getElementById("world-distance");
       const worldDistanceValue = document.getElementById("world-distance-value");
       const treesToggle = document.getElementById("trees-toggle");
+      const cubesToggle = document.getElementById("cubes-toggle");
       const builderToggle = document.getElementById("builder-toggle");
       const builderPanel = document.getElementById("builder-panel");
       const builderList = document.getElementById("builder-list");
@@ -217,6 +219,7 @@
       let dragging = false;
       let rightLook = false;
       let dragStart = null;
+      let marquee = null;               // live box-select band {x0,y0,x1,y1,additive}
       const keys = new Set();
       const spatialCellSize = 256;
       const camera = { x: 0, y: 650, z: -5200, yaw: 0, pitch: -0.08, fov: 760 };
@@ -459,6 +462,8 @@
         const dynGroups = new Map();
         let count = 0;
         for (const obj of objects.values()) {
+          // Selected pieces are drawn per-frame by renderSelectedMeshes() so
+          // gizmo drags move the mesh live without rebuilding these batches.
           if (isSelected(obj.id)) continue;
           const dx = obj.pos[0] - camera.x, dz = obj.pos[2] - camera.z;
           if (dx * dx + dz * dz > renderDistanceSq) continue;
@@ -604,6 +609,62 @@
         gl.enable(gl.CULL_FACE);
       }
 
+      // Selected constructions keep their real model: excluded from the static
+      // batches, they're re-uploaded here every frame from live obj.pos/euler/
+      // scale so gizmo drags move the actual mesh. Grouped per model so even a
+      // big marquee selection stays one draw call per distinct model.
+      function renderSelectedMeshes() {
+        if (!wm.loaded || !selectedIds.size) return;
+        const groups = new Map(); // entry|mesh -> {entry?, mesh?, objs: []}
+        for (const id of selectedIds) {
+          const obj = objects.get(id);
+          if (!obj) continue;
+          const entry = constructionEntryFor(obj);
+          const mesh = entry ? null : dynMeshReadyFor(obj);
+          if (!entry && !mesh) continue;
+          const key = entry || mesh;
+          let group = groups.get(key);
+          if (!group) { group = { entry, mesh, objs: [] }; groups.set(key, group); }
+          group.objs.push(obj);
+        }
+        if (!groups.size) return;
+        if (!builder.instBuf) builder.instBuf = gl.createBuffer();
+        gl.disable(gl.CULL_FACE);
+        gl.useProgram(wm.program);
+        gl.uniform3f(wm.uniforms.camera, camera.x, camera.y, camera.z);
+        gl.uniform2f(wm.uniforms.yaw, Math.sin(camera.yaw), Math.cos(camera.yaw));
+        gl.uniform2f(wm.uniforms.pitch, Math.sin(camera.pitch), Math.cos(camera.pitch));
+        gl.uniform2f(wm.uniforms.screenScale, 2 * camera.fov / window.innerWidth, 2 * camera.fov / window.innerHeight);
+        gl.uniform1i(wm.uniforms.tex, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        for (const { entry, mesh, objs } of groups.values()) {
+          const data = new Float32Array(objs.length * 5);
+          let o = 0;
+          for (const obj of objs) {
+            data[o] = obj.pos[0]; data[o + 1] = obj.pos[1]; data[o + 2] = obj.pos[2];
+            data[o + 3] = -(Number(obj.euler) || 0);
+            data[o + 4] = Number(obj.scale?.[0]) || 1;
+            o += 5;
+          }
+          const tex = entry ? worldTexture(entry.texIdx) : dynTexture(mesh.texName);
+          if (tex) {
+            gl.uniform1i(wm.uniforms.hasTex, 1);
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+          } else {
+            gl.uniform1i(wm.uniforms.hasTex, 0);
+            gl.uniform3f(wm.uniforms.color, 0.64, 0.62, 0.58);
+          }
+          gl.bindVertexArray(entry ? wm.vao : mesh.vao);
+          gl.bindBuffer(gl.ARRAY_BUFFER, builder.instBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+          gl.vertexAttribPointer(wm.locIPos, 3, gl.FLOAT, false, 20, 0);
+          gl.vertexAttribPointer(wm.locIYS, 2, gl.FLOAT, false, 20, 12);
+          gl.drawElementsInstanced(gl.TRIANGLES, entry ? entry.indexCount : mesh.indexCount, gl.UNSIGNED_INT, entry ? entry.indexStart * 4 : 0, objs.length);
+        }
+        gl.bindVertexArray(null);
+        gl.enable(gl.CULL_FACE);
+      }
+
       function worldCandidates(maxDist) {
         const cellX = Math.floor(camera.x / 256), cellZ = Math.floor(camera.z / 256);
         const key = `${cellX},${cellZ},${maxDist}`;
@@ -637,7 +698,7 @@
       }
 
       function addWorldObjectEntries(entries, maxRendered) {
-        if (!world.loaded || !worldToggle.checked) return;
+        if (!world.loaded || !worldToggle.checked || !cubesToggle.checked) return;
         const maxDist = Math.max(200, Number(worldDistance.value) || 1200);
         for (const [i] of worldCandidates(maxDist)) {
           if (entries.length >= maxRendered) break;
@@ -1358,20 +1419,89 @@
         }
       }
 
+      // Yaw-rotated bounding box corners for the selection outline. Uses the
+      // model's real bbox when there is one (mesh shader rotates by -euler),
+      // else the marker-cube box (cube shader rotates by +euler).
+      const OUTLINE_EDGES = [[0, 1], [0, 2], [0, 4], [1, 3], [1, 5], [2, 3], [2, 6], [3, 7], [4, 5], [4, 6], [5, 7], [6, 7]];
+      function obbCorners(obj) {
+        const s = Number(obj.scale?.[0]) || 1;
+        const entry = constructionEntryFor(obj);
+        const mesh = entry ? null : dynMeshReadyFor(obj);
+        const bbox = (entry && entry.bbox) || (mesh && mesh.bbox);
+        let lo, hi, a;
+        if (bbox) {
+          lo = [bbox[0][0] * s, bbox[0][1] * s, bbox[0][2] * s];
+          hi = [bbox[1][0] * s, bbox[1][1] * s, bbox[1][2] * s];
+          a = -(Number(obj.euler) || 0);
+        } else {
+          const [w, h, d] = cubeDims(obj);
+          lo = [-w / 2, 0, -d / 2];
+          hi = [w / 2, h, d / 2];
+          a = Number(obj.euler) || 0;
+        }
+        const c = Math.cos(a), sn = Math.sin(a);
+        const out = [];
+        for (const x of [lo[0], hi[0]]) for (const y of [lo[1], hi[1]]) for (const z of [lo[2], hi[2]]) {
+          out.push([obj.pos[0] + c * x - sn * z, obj.pos[1] + y, obj.pos[2] + sn * x + c * z]);
+        }
+        return out;
+      }
+
+      // White (primary) / cyan wireframe box around each selected object —
+      // replaces the old solid cube marker so the model itself stays visible.
+      function drawSelectionOutlines() {
+        if (!selectedIds.size) return;
+        let drawn = 0;
+        for (const id of selectedIds) {
+          const obj = objects.get(id);
+          if (!obj) continue;
+          if (++drawn > 400) break; // keep giant marquee selections cheap
+          const pts = obbCorners(obj).map(project);
+          const primary = id === selectedId;
+          for (const pass of [0, 1]) {
+            ctx.strokeStyle = pass === 0 ? "rgba(0,0,0,0.55)" : (primary ? "#ffffff" : "#57c8ff");
+            ctx.lineWidth = pass === 0 ? (primary ? 4 : 3.5) : (primary ? 2 : 1.5);
+            ctx.beginPath();
+            for (const [a, b] of OUTLINE_EDGES) {
+              const pa = pts[a], pb = pts[b];
+              if (!pa || !pb) continue;
+              ctx.moveTo(pa.x, pa.y); ctx.lineTo(pb.x, pb.y);
+            }
+            ctx.stroke();
+          }
+        }
+      }
+
+      function drawMarquee() {
+        if (!marquee) return;
+        const x = Math.min(marquee.x0, marquee.x1), y = Math.min(marquee.y0, marquee.y1);
+        const w = Math.abs(marquee.x1 - marquee.x0), h = Math.abs(marquee.y1 - marquee.y0);
+        if (w < 8 && h < 8) return; // plain/shaky clicks shouldn't flash a box
+        ctx.fillStyle = "rgba(87,200,255,0.12)";
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = "rgba(87,200,255,0.9)";
+        ctx.lineWidth = 1;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+        ctx.setLineDash([]);
+      }
+
       function drawGizmo() {
         gizmoHandles = [];
         const objs = selectedEditableObjects();
         if (!objs.length) return;
         const origin = gizmoCenter(objs);
-        // Size the gizmo from the group's spread so it's grabbable for 1 or many.
-        let spread = 0;
-        for (const o of objs) {
-          spread = Math.max(spread, Math.hypot(o.pos[0] - origin[0], o.pos[2] - origin[2]));
-          const dm = cubeDims(o); spread = Math.max(spread, Math.max(dm[0], dm[2]) * 0.5);
-        }
-        const length = Math.max(40, Math.min(220, spread * 1.1 + 45));
         const originScreen = project(origin);
         if (!originScreen) return;
+        // Fixed on-screen size at any camera distance: originScreen.scale is
+        // fov/depth (large when near, small when far), so GIZMO_PX / scale is the
+        // world length that projects to exactly GIZMO_PX pixels. There is
+        // deliberately no world-space floor — flooring at the selection's spread
+        // made the arms of a large piece viewed up close run past the screen
+        // edges. A fixed pixel length always fits; on a small window it's capped
+        // to a fraction of the viewport so it can never exceed the screen.
+        const GIZMO_PX = Math.min(120, Math.min(window.innerWidth, window.innerHeight) * 0.3);
+        const length = GIZMO_PX / originScreen.scale;
         const axes = [
           { axis: "x", color: "#ff4b4b", vector: [1, 0, 0] },
           { axis: "y", color: "#4dff72", vector: [0, 1, 0] },
@@ -1379,8 +1509,8 @@
         ];
 
         if (gizmoMode === "rotate") {
-          // Yaw ring with a knob at the primary object's facing.
-          const ringRadius = Math.max(spread + 14, 26);
+          // Yaw ring, same fixed on-screen size as the move/scale arms.
+          const ringRadius = GIZMO_PX / originScreen.scale;
           ctx.strokeStyle = "rgba(255, 210, 77, 0.85)";
           ctx.lineWidth = 2.5;
           ctx.beginPath();
@@ -1488,9 +1618,12 @@
           color[0] *= 0.72; color[1] *= 0.72; color[2] *= 0.72;
         }
         projectedObjects.push({ obj, screen, distSq });
-        // Constructions with a real model are drawn by renderWorldModels();
-        // they stay pickable, and selected ones keep their cube marker.
-        if (!selectedHere && (constructionEntryFor(obj) || dynMeshReadyFor(obj))) return true;
+        // Constructions with a real model are drawn by renderWorldModels()
+        // (selected ones individually by renderSelectedMeshes, plus an outline)
+        // — never as a cube on top of the mesh.
+        if (constructionEntryFor(obj) || dynMeshReadyFor(obj)) return true;
+        // Marker cubes can be hidden; objects stay pickable and outline on select.
+        if (!cubesToggle.checked) return true;
         entries.push({ obj, center, scale: [w, h, d], color, yaw: Number(obj.euler) || 0, distSq });
         return true;
       }
@@ -1514,6 +1647,7 @@
         gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
         renderTerrain();
         renderWorldModels();
+        renderSelectedMeshes();
         renderTrees();
         renderGhost();
         if (!entries.length) return;
@@ -1542,8 +1676,10 @@
         const entries = buildRenderEntries();
         renderGpu(entries);
         ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+        drawSelectionOutlines();
         drawGizmo();
         drawPlayers();
+        drawMarquee();
         drawHud();
         renderedCount.textContent = entries.length;
       }
@@ -1591,7 +1727,7 @@
           selectedId = key;
           if (key) selectedIds.add(key);
         }
-        objectsRev++; // selected constructions render as cubes, not models
+        objectsRev++; // selected constructions move between batches and renderSelectedMeshes
         refreshSelectionPanel();
         renderList(false);
       }
@@ -1610,13 +1746,15 @@
         selectionSummary.textContent = count === 1 ? "1 object selected" : `${count} objects selected`;
         if (count > 1) {
           selectionListEl.style.display = "block";
-          selectionListEl.innerHTML = [...selectedIds].map((id) => {
+          const ids = [...selectedIds];
+          const shown = ids.slice(0, 100); // box select can grab thousands
+          selectionListEl.innerHTML = shown.map((id) => {
             const o = objects.get(id);
             if (!o) return "";
             const label = `${o.name || o.kind} (${o.itemDefId || o.modelId || "?"})`;
             const style = id === selectedId ? ' style="color:#fff;font-weight:700"' : "";
             return `<div class="object-row" data-sel-id="${id}"${style}>${label} <span class="muted">${o.kind}</span></div>`;
-          }).join("");
+          }).join("") + (ids.length > 100 ? `<div class="object-row muted">…and ${ids.length - 100} more</div>` : "");
         } else {
           selectionListEl.style.display = "none";
           selectionListEl.innerHTML = "";
@@ -1811,11 +1949,13 @@
         const maxDistSq = renderDistance * renderDistance;
         let best = null, bestT = Infinity;
         for (const obj of objects.values()) {
-          const entry = constructionEntryFor(obj);
-          if (!entry || !entry.bbox) continue;
           const dx = obj.pos[0] - camera.x, dz = obj.pos[2] - camera.z;
-          if (dx * dx + dz * dz > maxDistSq) continue;
-          const t = rayBoxHit(obj, entry.bbox, -(Number(obj.euler) || 0), dir);
+          if (dx * dx + dz * dz > maxDistSq) continue; // cull first; also gates dyn-mesh lookup
+          const entry = constructionEntryFor(obj);
+          let bbox = entry && entry.bbox ? entry.bbox : null;
+          if (!bbox) { const mesh = dynMeshReadyFor(obj); if (mesh && mesh.bbox) bbox = mesh.bbox; }
+          if (!bbox) continue;
+          const t = rayBoxHit(obj, bbox, -(Number(obj.euler) || 0), dir);
           if (t !== null && t < bestT) { bestT = t; best = obj; }
         }
         return best;
@@ -1895,7 +2035,7 @@
         if (!wm.loaded || !modelId) return { state: "loading", count: 0 };
         let mesh = dyn.meshes.get(modelId);
         if (mesh) return mesh;
-        mesh = { state: "loading", raw: null, vao: null, instBuf: null, indexCount: 0, texName: "", count: 0 };
+        mesh = { state: "loading", raw: null, vao: null, instBuf: null, indexCount: 0, texName: "", count: 0, bbox: null };
         dyn.meshes.set(modelId, mesh);
         fetch(`/api/model-mesh/${modelId}`, { headers: { Authorization: `Bearer ${token}` } })
           .then((r) => { if (!r.ok) throw new Error("no mesh"); return r.arrayBuffer(); })
@@ -1909,6 +2049,14 @@
             const verts = new Float32Array(buf, off, vc * 5); off += vc * 20;
             const indices = new Uint32Array(buf, off, ic);
             mesh.raw = { verts, indices };
+            let mnx = Infinity, mny = Infinity, mnz = Infinity, mxx = -Infinity, mxy = -Infinity, mxz = -Infinity;
+            for (let v = 0; v < vc; v++) {
+              const x = verts[v * 5], y = verts[v * 5 + 1], z = verts[v * 5 + 2];
+              if (x < mnx) mnx = x; if (x > mxx) mxx = x;
+              if (y < mny) mny = y; if (y > mxy) mxy = y;
+              if (z < mnz) mnz = z; if (z > mxz) mxz = z;
+            }
+            mesh.bbox = vc ? [[mnx, mny, mnz], [mxx, mxy, mxz]] : null;
             mesh.texName = header.texture || "";
             mesh.vao = gl.createVertexArray();
             gl.bindVertexArray(mesh.vao);
@@ -2347,12 +2495,17 @@
           // cursor reappears where it was on release. Don't use setPointerCapture
           // here — pointer lock already captures the mouse and the two conflict.
           rightLook = true;
+          marquee = null; // right-click aborts a box select in progress
           if (document.pointerLockElement !== canvas) {
             try { canvas.requestPointerLock(); } catch (_) {}
           }
           return;
         }
         dragStart = { x: event.clientX, y: event.clientY };
+        // Left-drag on empty space becomes a box select (not while placing).
+        if (event.button === 0 && !(builder.on && builderHasChoice())) {
+          marquee = { x0: event.clientX, y0: event.clientY, x1: event.clientX, y1: event.clientY, additive: event.shiftKey };
+        }
         canvas.setPointerCapture(event.pointerId);
       });
 
@@ -2401,6 +2554,10 @@
           }
           return;
         }
+        if (marquee && !rightLook) {
+          marquee.x1 = event.clientX;
+          marquee.y1 = event.clientY;
+        }
         if (builder.on && builderHasChoice() && !rightLook) {
           const now = performance.now();
           if (now - lastGhostUpdate > 40) { // raycast is cheap but not free
@@ -2429,17 +2586,59 @@
           if (document.pointerLockElement === canvas) document.exitPointerLock();
           return;
         }
-        const moved = dragStart ? Math.hypot(event.clientX - dragStart.x, event.clientY - dragStart.y) : 999;
         dragStart = null;
-        if (event.button === 0 && moved < 5) {
-          if (builder.on && builderHasChoice()) { placeChosen(event.clientX, event.clientY); return; }
-          const hit = pick(event.clientX, event.clientY);
-          if (hit) setSelected(hit.id, event.shiftKey);
-          else if (!event.shiftKey) setSelected(""); // click empty space clears
-        }
+        const box = marquee;
+        marquee = null;
+        if (event.button !== 0) return;
+        // Only a real drag box selects; anything smaller counts as a click even if
+        // the mouse drifted a few pixels. (Small drifts used to fall through to the
+        // box path and, matching no object center, cleared the selection — so a
+        // click on an object looked like it did nothing.)
+        const boxW = box ? Math.abs(box.x1 - box.x0) : 0;
+        const boxH = box ? Math.abs(box.y1 - box.y0) : 0;
+        if (box && (boxW >= 8 || boxH >= 8)) { applyMarqueeSelection(box); return; }
+        if (builder.on && builderHasChoice()) { placeChosen(event.clientX, event.clientY); return; }
+        const hit = pick(event.clientX, event.clientY);
+        if (hit) setSelected(hit.id, event.shiftKey);
+        else if (!event.shiftKey) setSelected(""); // click empty space clears
       });
 
-      canvas.addEventListener("pointercancel", () => { rightLook = false; dragStart = null; activeGizmo = null; if (document.pointerLockElement === canvas) document.exitPointerLock(); });
+      // Screen-space AABB of an object's oriented box (same corners the outline
+      // uses), so box-select catches an object you dragged across even when its
+      // center isn't inside the band.
+      function screenAabb(obj) {
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+        for (const p of obbCorners(obj)) {
+          const s = project(p);
+          if (!s) continue;
+          any = true;
+          if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x;
+          if (s.y < minY) minY = s.y; if (s.y > maxY) maxY = s.y;
+        }
+        return any ? { minX, minY, maxX, maxY } : null;
+      }
+
+      // Box select: every object whose projected box overlaps the band. Shift
+      // adds to the current selection, otherwise it replaces it.
+      function applyMarqueeSelection(box) {
+        const x0 = Math.min(box.x0, box.x1), x1 = Math.max(box.x0, box.x1);
+        const y0 = Math.min(box.y0, box.y1), y1 = Math.max(box.y0, box.y1);
+        if (!box.additive) { selectedIds.clear(); selectedId = ""; }
+        for (const { obj, screen } of projectedObjects) {
+          const bb = screenAabb(obj);
+          const hit = bb
+            ? bb.maxX >= x0 && bb.minX <= x1 && bb.maxY >= y0 && bb.minY <= y1
+            : screen.x >= x0 && screen.x <= x1 && screen.y >= y0 && screen.y <= y1;
+          if (!hit) continue;
+          selectedIds.add(obj.id);
+          selectedId = obj.id;
+        }
+        objectsRev++; // selected pieces leave the static batches
+        refreshSelectionPanel();
+        renderList(false);
+      }
+
+      canvas.addEventListener("pointercancel", () => { rightLook = false; dragStart = null; marquee = null; activeGizmo = null; if (document.pointerLockElement === canvas) document.exitPointerLock(); });
       // Keep look state in sync with the browser: ESC or any lost lock ends look.
       document.addEventListener("pointerlockchange", () => {
         if (document.pointerLockElement !== canvas) rightLook = false;
